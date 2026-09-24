@@ -195,6 +195,19 @@ done < "${TEMPLATE_FILE}"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/"
 PY=python3
 
+# The redaction extension currently owns only the Python ingestion path.
+case "${RAGFLOW_REDACTION_ENABLED:-0}" in
+    0|1) ;;
+    *) echo "REDACTION_INVALID_ENABLED_FLAG" >&2; exit 1 ;;
+esac
+if [[ "${RAGFLOW_REDACTION_ENABLED:-0}" == "1" ]]; then
+    if [[ "${API_PROXY_SCHEME:-}" != "python" ]] || [[ "${ENABLE_ADMIN_SERVER}" -eq 1 ]] || [[ "${ENABLE_MCP_SERVER}" -eq 1 ]]; then
+        echo "REDACTION_REQUIRES_PYTHON_WITHOUT_ADMIN_OR_MCP" >&2
+        exit 1
+    fi
+    ENABLE_DATASYNC=0
+fi
+
 # -----------------------------------------------------------------------------
 # Select Nginx Configuration based on API_PROXY_SCHEME
 # -----------------------------------------------------------------------------

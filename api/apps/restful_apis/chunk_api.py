@@ -232,6 +232,9 @@ async def parse(tenant_id, dataset_id):
             continue
         if not doc:
             return get_error_data_result(message=f"you don't own the document {id}")
+        from api.db.services.redaction_service import verify_document
+
+        await thread_pool_exec(verify_document, id, kb_id=dataset_id)
         info = {"run": "1", "progress": 0, "progress_msg": ""}
         if (
             DocumentService.filter_update(

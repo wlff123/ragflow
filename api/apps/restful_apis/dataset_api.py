@@ -22,6 +22,7 @@ from api.apps import current_user, login_required
 from api.apps.services import dataset_api_service
 from api.utils.api_utils import add_tenant_id_to_kwargs, get_error_argument_result, get_error_data_result, get_json_result, get_result
 from api.utils.pagination_utils import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, validate_rest_api_ids, validate_rest_api_page, validate_rest_api_page_size
+from api.utils.redaction_guard import validate_dataset_config
 from api.utils.validation_utils import (
     CreateDatasetReq,
     DeleteDatasetReq,
@@ -143,6 +144,7 @@ async def create(tenant_id: str = None):
             data:
               type: object
     """
+    await validate_dataset_config()
     req, err = await validate_and_parse_json_request(request, CreateDatasetReq)
     if err is not None:
         return get_error_argument_result(err)
@@ -296,6 +298,7 @@ async def update(tenant_id, dataset_id):
     # |----------------|-------------|
     # | embedding_model| embd_id     |
     # | chunk_method   | parser_id   |
+    await validate_dataset_config()
     extras = {"dataset_id": dataset_id}
     req, err = await validate_and_parse_json_request(request, UpdateDatasetReq, extras=extras, exclude_unset=True)
     if err is not None:

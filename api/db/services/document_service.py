@@ -23,7 +23,7 @@ from peewee import fn, Case, JOIN
 
 from api.constants import IMG_BASE64_PREFIX, FILE_NAME_LEN_LIMIT
 from api.db import PIPELINE_SPECIAL_PROGRESS_FREEZE_TASK_TYPES, FileType, UserTenantRole, CanvasCategory
-from api.db.db_models import DB, Document, Knowledgebase, Task, Tenant, UserTenant, File2Document, File, UserCanvas, User
+from api.db.db_models import DB, Document, Knowledgebase, Task, Tenant, UserTenant, File2Document, File, UserCanvas, User, RedactionRecord
 from api.db.db_utils import bulk_insert_into_db
 from api.db.services.common_service import CommonService, retry_deadlock_operation
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -452,11 +452,16 @@ class DocumentService(CommonService):
     @classmethod
     @DB.connection_context()
     def insert(cls, doc):
-        if not cls.save(**doc):
-            raise RuntimeError("Database error (Document)!")
-        if not KnowledgebaseService.atomic_increase_doc_num_by_id(doc["kb_id"]):
+        with DB.atomic():
+            return cls._insert(doc)
+
+    @classmethod
+    def _insert(cls, doc):
+        """Insert within the caller's transaction without closing its connection."""
+        document = cls.model.create(**doc)
+        if Knowledgebase.update(doc_num=Knowledgebase.doc_num + 1).where(Knowledgebase.id == doc["kb_id"]).execute() != 1:
             raise RuntimeError("Database error (Knowledgebase)!")
-        return Document(**doc)
+        return document
 
     @classmethod
     @DB.connection_context()
@@ -867,6 +872,7 @@ class DocumentService(CommonService):
             deleted = cls.model.delete().where(cls.model.id == doc_id).execute()
             if not deleted:
                 return False
+            RedactionRecord.delete().where(RedactionRecord.id == doc_id).execute()
             Knowledgebase.update(
                 token_num=Knowledgebase.token_num - doc.token_num,
                 chunk_num=Knowledgebase.chunk_num - doc.chunk_num,

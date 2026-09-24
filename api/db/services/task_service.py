@@ -465,6 +465,10 @@ def queue_tasks(doc: dict, bucket: str, name: str, priority: int, user_id: str |
         - Previous task chunks may be reused if available
     """
 
+    from api.db.services.redaction_service import verify_document
+
+    verify_document(doc["id"], kb_id=doc.get("kb_id"), bucket=bucket, name=name)
+
     def new_task():
         return {
             "id": get_uuid(),
@@ -655,6 +659,13 @@ def queue_dataflow(
     rerun: bool = False,
     user_id: str | None = None,
 ) -> tuple[bool, str]:
+    from common.enterprise_redaction import RedactionError, enabled
+    from api.db.services.redaction_service import verify_document
+
+    if enabled():
+        if file is not None or rerun:
+            raise RedactionError("REDACTION_DATAFLOW_OVERRIDE_UNSUPPORTED")
+        verify_document(doc_id, tenant_id=tenant_id)
 
     task = dict(
         id=task_id,

@@ -83,6 +83,10 @@ app.config["SECRET_KEY"] = settings.get_secret_key()
 app.secret_key = settings.get_secret_key()
 commands.register_commands(app)
 
+from api.utils.redaction_guard import install as install_redaction_guard
+
+install_redaction_guard(app)
+
 from functools import wraps
 from typing import ParamSpec, TypeVar
 from collections.abc import Awaitable, Callable, Iterable

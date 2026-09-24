@@ -116,6 +116,9 @@ def run_server():
     # init db
     init_web_db()
     init_web_data()
+    from api.db.services.redaction_service import validate_startup
+
+    validate_startup()
     # init runtime config
     import argparse
 

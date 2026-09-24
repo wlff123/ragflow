@@ -1345,6 +1345,16 @@ class Document(DataBaseModel):
         db_table = "document"
 
 
+class RedactionRecord(DataBaseModel):
+    """Signed processing evidence only; never source text or original filenames."""
+
+    id = CharField(max_length=32, primary_key=True)
+    receipt = JSONField(null=False)
+
+    class Meta:
+        db_table = "redaction_record"
+
+
 class File(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     parent_id = CharField(max_length=32, null=False, help_text="parent folder id", index=True)

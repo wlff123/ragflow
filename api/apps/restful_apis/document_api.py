@@ -1479,9 +1479,13 @@ async def ingest(tenant_id):
 
 
 def _run_sync(user_id: str, req):
+    from api.db.services.redaction_service import verify_document
+
     for doc_id in req["doc_ids"]:
         if not DocumentService.accessible(doc_id, user_id):
             return RetCode.AUTHENTICATION_ERROR, "no authorization"
+        if str(req["run"]) == TaskStatus.RUNNING.value:
+            verify_document(doc_id)
 
     kb_table_num_map = {}
     for doc_id in req["doc_ids"]:
@@ -1624,6 +1628,9 @@ async def parse_documents(tenant_id, dataset_id):
                     errors.append(f"Document not found: {doc_id}")
                     continue
 
+                from api.db.services.redaction_service import verify_document
+
+                verify_document(doc_id, kb_id=dataset_id)
                 info = {"run": str(TaskStatus.RUNNING.value), "progress": 0}
                 # If re-running a completed document, clear previous chunks
                 if str(doc.run) == TaskStatus.DONE.value:

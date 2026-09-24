@@ -30,7 +30,7 @@ import xxhash
 from peewee import fn
 
 from api.db import KNOWLEDGEBASE_FOLDER_NAME, SKILLS_FOLDER_NAME, FileType
-from api.db.db_models import DB, Document, File, File2Document, Knowledgebase, Task
+from api.db.db_models import DB, Document, File, File2Document, Knowledgebase, Task, RedactionRecord
 from api.db.services import duplicate_name
 from api.db.services.common_service import CommonService
 from api.db.services.document_service import DocumentService
@@ -513,7 +513,12 @@ class FileService(CommonService):
     @classmethod
     @DB.connection_context()
     def add_file_from_kb(cls, doc, kb_folder_id, tenant_id):
-        for _ in File2DocumentService.get_by_document_id(doc["id"]):
+        return cls._add_file_from_kb(doc, kb_folder_id, tenant_id)
+
+    @classmethod
+    def _add_file_from_kb(cls, doc, kb_folder_id, tenant_id):
+        """Link a document using the caller's connection/transaction."""
+        if File2Document.select().where(File2Document.document_id == doc["id"]).exists():
             return
         file = {
             "id": get_uuid(),
@@ -526,8 +531,8 @@ class FileService(CommonService):
             "location": doc["location"],
             "source_type": FileSource.KNOWLEDGEBASE,
         }
-        cls.save(**file)
-        File2DocumentService.save(id=get_uuid(), file_id=file["id"], document_id=doc["id"])
+        cls.model.create(**file)
+        File2Document.create(id=get_uuid(), file_id=file["id"], document_id=doc["id"])
 
     @classmethod
     @DB.connection_context()
@@ -578,6 +583,17 @@ class FileService(CommonService):
     @classmethod
     @DB.connection_context()
     def upload_document(self, kb, file_objs, user_id, src="local", parent_path: str | None = None, parser_config_override: dict | None = None):
+        from common.enterprise_redaction import RedactionError, enabled
+
+        protected = enabled()
+        if protected:
+            from common.enterprise_redaction.engine import prepare_files, validate_text_fields
+
+            if src != "local" or parent_path or parser_config_override:
+                raise RedactionError("REDACTION_UPLOAD_OPTIONS_UNSUPPORTED")
+            validate_text_fields(kb.parser_config)
+            file_objs = prepare_files(list(file_objs), kb.tenant_id, kb.id)
+
         root_folder = self.get_root_folder(user_id)
         pf_id = root_folder["id"]
         self.init_knowledgebase_docs(pf_id, user_id)
@@ -595,8 +611,11 @@ class FileService(CommonService):
 
         err, files = [], []
         for file in file_objs:
+            protected_location = None
             doc_id = file.id if hasattr(file, "id") else get_uuid()
             e, doc = DocumentService.get_by_id(doc_id)
+            if protected and e:
+                raise RedactionError("REDACTION_OVERWRITE_UNSUPPORTED")
             if e and str(doc.kb_id) != str(kb.id):
                 if not self._discard_orphaned_document(doc):
                     logger.warning(
@@ -640,12 +659,18 @@ class FileService(CommonService):
 
                 location = filename if not safe_parent_path else f"{safe_parent_path}/{filename}"
                 while settings.STORAGE_IMPL.obj_exist(kb.id, location):
+                    if protected:
+                        raise RedactionError("REDACTION_STORAGE_COLLISION")
                     location += "_"
 
                 blob = file.read()
                 if filetype == FileType.PDF.value:
                     blob = read_potential_broken_pdf(blob)
-                settings.STORAGE_IMPL.put(kb.id, location, blob)
+                if protected:
+                    protected_location = location
+                    settings.STORAGE_IMPL.put(kb.id, location, blob, kb.tenant_id)
+                else:
+                    settings.STORAGE_IMPL.put(kb.id, location, blob)
 
                 img = thumbnail_img(filename, blob)
                 thumbnail_location = ""
@@ -670,12 +695,32 @@ class FileService(CommonService):
                     "thumbnail": thumbnail_location,
                     "content_hash": incoming_fp or xxhash.xxh128(blob).hexdigest(),
                 }
-                DocumentService.insert(doc)
+                if protected:
+                    from common.enterprise_redaction.engine import verify_receipt
 
-                FileService.add_file_from_kb(doc, kb_folder["id"], kb.tenant_id)
+                    # Some storage adapters return None on failure. Read back
+                    # before publishing either the Document or its receipt.
+                    stored = settings.STORAGE_IMPL.get(kb.id, location, kb.tenant_id)
+                    verify_receipt(file.receipt, doc_id, kb.tenant_id, kb.id, filename, stored)
+                # Both modes share publication and the same transaction.
+                with DB.atomic():
+                    DocumentService._insert(doc)
+                    self._add_file_from_kb(doc, kb_folder["id"], kb.tenant_id)
+                    if protected:
+                        RedactionRecord.create(id=doc_id, receipt=file.receipt)
                 files.append((doc, blob))
             except Exception as e:  # noqa: BLE001 - collect per-file errors and keep processing the rest
-                err.append(file.filename + ": " + str(e))
+                if protected:
+                    # Only safe bytes can have reached storage. Cleanup failure
+                    # leaves an unreferenced safe object, never a raw original.
+                    try:
+                        if protected_location is not None:
+                            settings.STORAGE_IMPL.rm(kb.id, protected_location, kb.tenant_id)
+                    except Exception:
+                        logger.warning("REDACTION_SAFE_OBJECT_CLEANUP_FAILED")
+                    err.append("REDACTION_PUBLISH_FAILED")
+                else:
+                    err.append(file.filename + ": " + str(e))
 
         return err, files
 

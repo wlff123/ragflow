@@ -176,6 +176,10 @@ CURRENT_TASKS = {}
 
 def _redact_task_user(task: dict) -> dict:
     """Copy a task dict for logs/heartbeat without the raw end-user identifier."""
+    from common.enterprise_redaction import enabled
+
+    if enabled():
+        return {key: task.get(key) for key in ("id", "doc_id", "kb_id", "task_type")}
     payload = dict(task)
     if "user_id" in payload:
         payload["user_id"] = True
@@ -1790,13 +1794,16 @@ async def handle_task() -> bool:
         await asyncio.sleep(5)
         return False
 
-    logging.info(f"handle_task begin for task {json.dumps(task)}")
-
     task_type = task["task_type"]
     pipeline_task_type = TASK_TYPE_TO_PIPELINE_TASK_TYPE.get(task_type, PipelineTaskType.PARSE) or PipelineTaskType.PARSE
     task_id = task["id"]
     ctx_token = set_llm_request_context(user_id=normalize_llm_user_id(task.get("user_id")))
     try:
+        from api.db.services.redaction_service import verify_task
+
+        # Common boundary for both TaskManager (default) and the legacy executor.
+        await thread_pool_exec(verify_task, task)
+        logging.info(f"handle_task begin for task {json.dumps(_redact_task_user(task))}")
         CURRENT_TASKS[task["id"]] = _redact_task_user(copy.deepcopy(task))
         run_mode = os.environ.get("TE_RUN_MODE", "0")
         logging.info(f"TE_RUN_MODE is {run_mode}")
