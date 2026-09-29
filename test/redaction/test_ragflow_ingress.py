@@ -12,9 +12,10 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 import types
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -97,7 +98,7 @@ def rag(tmp_path, monkeypatch):
         doc = models.Document.get_or_none(models.Document.id == doc_id)
         return doc is not None, doc
 
-    document_service = SimpleNamespace(model=models.Document, get_by_id=get_by_id, check_doc_health=lambda *a: None, query=lambda **kw: [])
+    document_service = SimpleNamespace(model=models.Document, get_by_id=get_by_id, check_doc_health=lambda *a: None, query=lambda **kw: list(models.Document.select().filter(**kw)))
     file_service = SimpleNamespace(
         model=models.File,
         get_root_folder=lambda u: {"id": "root"},
@@ -106,7 +107,7 @@ def rag(tmp_path, monkeypatch):
         new_a_file_from_kb=lambda *a: {"id": "folder"},
         get_parser=lambda *a: "naive",
     )
-    filetype = SimpleNamespace(OTHER=SimpleNamespace(value="other"), PDF=SimpleNamespace(value="pdf"))
+    filetype = SimpleNamespace(**{name: SimpleNamespace(value=name.lower()) for name in ("OTHER", "PDF", "DOC", "AURAL", "VISUAL")})
     ns = dict(
         DB=db,
         Knowledgebase=models.Knowledgebase,
@@ -117,15 +118,24 @@ def rag(tmp_path, monkeypatch):
         FileService=file_service,
         settings=settings,
         sanitize_path=lambda p: p,
-        duplicate_name=lambda q, **kw: kw["name"],
-        filename_type=lambda name: "doc",
         FileType=filetype,
+        FILE_NAME_LEN_LIMIT=255,
+        re=re,
+        os=os,
+        PurePath=PurePath,
         thumbnail_img=lambda *a: None,
         Path=Path,
         get_uuid=lambda: uuid4().hex,
         xxhash=SimpleNamespace(xxh128=lambda blob: hashlib.md5(blob)),
         logger=logging.getLogger("redaction-test"),
     )
+    for path, name in [
+        ("api/utils/file_utils.py", "_normalize_filename_for_type"),
+        ("api/utils/file_utils.py", "filename_type"),
+        ("api/db/services/__init__.py", "_split_name_counter"),
+        ("api/db/services/__init__.py", "duplicate_name"),
+    ]:
+        load_function(path, name, ns)
     insert = load_function("api/db/services/document_service.py", "_insert", ns, "DocumentService")
     document_service._insert = lambda doc: insert(document_service, doc)
     link = load_function("api/db/services/file_service.py", "_add_file_from_kb", ns, "FileService")
@@ -418,3 +428,235 @@ def test_receipt_delete_failure_rolls_back_document_and_count(rag, upload, monke
     assert rag.models.Document.get_by_id(doc_id)
     assert rag.models.RedactionRecord.get_by_id(doc_id)
     assert rag.models.Knowledgebase.get_by_id("kb").doc_num == 1
+
+
+def test_zip_plain_mode_keeps_all_files_and_renames_collisions(rag, upload, zip_upload, monkeypatch):
+    monkeypatch.setenv("RAGFLOW_REDACTION_ENABLED", "0")
+    errors, files = rag.upload([zip_upload([("one/report.txt", "first"), ("two/report.txt", "second")]), upload("plain", "loose.txt")])
+    assert not errors
+    assert [doc["name"] for doc, _ in files] == ["report.txt", "report(1).txt", "loose.txt"]
+    assert [blob for _, blob in files] == [b"first", b"second", b"plain"]
+    assert rag.models.Knowledgebase.get_by_id("kb").doc_num == 3
+    assert rag.models.RedactionRecord.select().count() == 0
+    assert len(rag.storage.objects) == 3
+
+
+def test_zip_every_member_redacted_and_receipt_bound(rag, zip_upload):
+    errors, files = rag.upload(
+        [
+            zip_upload(
+                [
+                    ("13800138000/raw.txt", "电话13800138000"),
+                    ("private@example.com/summary.md", "# 项目\n星桥机密项目"),
+                    ("table.csv", "邮箱,手机号\nprivate@example.com,13800138000"),
+                ],
+                "private@example.com.zip",
+            )
+        ]
+    )
+    assert not errors and len(files) == 3
+    for doc, blob in files:
+        assert "[已剔除]" in blob.decode()
+        assert doc["name"].startswith("文档-")
+        rag.service.verify_document(doc["id"], "tenant", "kb", "kb", doc["location"])
+    assert rag.models.RedactionRecord.select().count() == 3
+    published = repr(rag.storage.writes) + repr([list(model.select().dicts()) for model in (rag.models.Document, rag.models.File, rag.models.RedactionRecord)])
+    assert all(secret not in published for secret in ("13800138000", "private@example.com", "星桥机密项目"))
+    assert not any(name.endswith(".zip") for _, name in rag.storage.objects)
+
+
+@pytest.mark.parametrize(
+    "entries,error",
+    [
+        ([("ok.txt", "valid"), ("bad.pdf", "raw")], "REDACTION_FILE_FORMAT_UNSUPPORTED"),
+        ([("ok.txt", "valid"), ("bad.txt", b"\xff")], "REDACTION_UTF8_REQUIRED"),
+        ([("ok.txt", "valid"), ("bad.exe", "raw")], "ZIP_MEMBER_FORMAT_UNSUPPORTED"),
+        ([("ok.txt", "valid"), ("../bad.txt", "raw")], "ZIP_UNSAFE_PATH"),
+        ([(f"{i}.txt", "valid") for i in range(6)], "ZIP_FILE_COUNT_LIMIT"),
+    ],
+)
+def test_zip_batch_failure_publishes_nothing(rag, upload, zip_upload, entries, error):
+    with pytest.raises(ValueError, match=error):
+        rag.upload([upload("plain"), zip_upload(entries)])
+    assert rag.storage.writes == []
+    for model in (rag.models.Document, rag.models.File, rag.models.RedactionRecord):
+        assert model.select().count() == 0
+
+
+def test_zip_member_size_uses_redaction_limit(rag, zip_upload):
+    import zipfile
+
+    with pytest.raises(ValueError, match="ZIP_MEMBER_SIZE_LIMIT"):
+        rag.upload([zip_upload([("big.txt", b"x" * (2 * 1024 * 1024 + 1))], compression=zipfile.ZIP_STORED)])
+    assert rag.storage.writes == []
+
+
+def test_zip_publication_failure_returns_successful_members_only(rag, zip_upload, monkeypatch):
+    original = rag.storage.put
+
+    def fail_second(*args, **kwargs):
+        if rag.storage.writes:
+            raise OSError("simulated storage outage")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rag.storage, "put", fail_second)
+    errors, files = rag.upload([zip_upload([("a.txt", "13800138000"), ("b.txt", "private@example.com")])])
+    assert errors == ["REDACTION_PUBLISH_FAILED"] and len(files) == 1
+    assert rag.models.Document.select().count() == rag.models.RedactionRecord.select().count() == 1
+    assert rag.models.Knowledgebase.get_by_id("kb").doc_num == 1
+    assert len(rag.storage.objects) == 1
+
+
+@pytest.mark.parametrize("protected", ["0", "1"])
+async def test_zip_real_http_sqlite_and_disk(rag, zip_upload, tmp_path, monkeypatch, protected):
+    """Real loopback HTTP and disk I/O; production route/service/Presidio bodies.
+
+    SQLite replaces MySQL; filesystem objects replace MinIO. Authentication
+    lookup and parser dependencies are fixtures, not a complete RAGFlow server.
+    """
+    import asyncio
+    import socket
+    import time
+    from functools import wraps
+
+    import httpx
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+    from quart import Quart, current_app, jsonify, request
+    from werkzeug.exceptions import Unauthorized
+
+    from api.utils.redaction_guard import install
+    from common.constants import RetCode, TaskStatus
+    from common.zip_upload import ZipUploadError
+
+    monkeypatch.setenv("RAGFLOW_REDACTION_ENABLED", protected)
+    object_dir = tmp_path / "objects"
+    object_dir.mkdir()
+
+    def object_path(bucket, name):
+        return object_dir / bucket / name
+
+    def put(bucket, name, blob, tenant_id=None):
+        target = object_path(bucket, name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+
+    rag.ns["settings"].STORAGE_IMPL = SimpleNamespace(
+        put=put,
+        get=lambda bucket, name, *a: object_path(bucket, name).read_bytes(),
+        rm=lambda bucket, name, *a: object_path(bucket, name).unlink(missing_ok=True),
+        obj_exist=lambda bucket, name: object_path(bucket, name).exists(),
+    )
+
+    async def thread_pool(func, *args, **kwargs):
+        def run():
+            with rag.db.connection_context():
+                return func(*args, **kwargs)
+
+        return await asyncio.to_thread(run)
+
+    ns = dict(
+        request=request,
+        current_app=current_app,
+        logging=logging,
+        json=json,
+        RetCode=RetCode,
+        TaskStatus=TaskStatus,
+        ZipUploadError=ZipUploadError,
+        FILE_NAME_LEN_LIMIT=255,
+        _safe_jsonify=jsonify,
+        thread_pool_exec=thread_pool,
+        FileService=SimpleNamespace(upload_document=lambda kb, files, user, **kw: rag.upload(files, **kw)),
+        KnowledgebaseService=SimpleNamespace(get_by_id=lambda id: (id == "kb", rag.kb)),
+        check_kb_team_permission=lambda *a: request.headers.get("X-Test-Deny") != "1",
+        wraps=wraps,
+        os=os,
+        time=time,
+        AUTH_BETA="beta",
+        QuartAuthUnauthorized=Unauthorized,
+        _normalize_auth_types=lambda _: {"jwt"},
+        _load_user=lambda _: request.headers.get("Authorization") == "Bearer zip-local-test",
+    )
+    for name in ("strip_graphrag_raptor_config", "get_result", "get_error_data_result", "construct_json_result"):
+        load_function("api/utils/api_utils.py", name, ns)
+    for name in ("_process_key_mappings", "_process_run_mapping", "map_doc_keys_with_run_status"):
+        load_function("api/apps/services/document_api_service.py", name, ns)
+    for name in ("_upload_local_documents", "upload_document"):
+        load_function("api/apps/restful_apis/document_api.py", name, ns)
+    node = source_node("api/apps/__init__.py", "login_required")
+    exec("from __future__ import annotations\n" + ast.unparse(node), ns)
+
+    app = Quart(__name__)
+    install(app)
+
+    @ns["login_required"]
+    async def endpoint(dataset_id):
+        return await ns["upload_document"](dataset_id, "tenant")
+
+    app.add_url_rule("/api/v1/datasets/<dataset_id>/documents", endpoint="document_api.upload_document", view_func=endpoint, methods=["POST"])
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = Config()
+    config.bind = [f"127.0.0.1:{port}"]
+    config.accesslog = config.errorlog = None
+    shutdown = asyncio.Event()
+    server = asyncio.create_task(serve(app, config, shutdown_trigger=shutdown.wait))
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=10) as client:
+            for _ in range(100):
+                if server.done():
+                    await server
+                try:
+                    await client.get("/")
+                    break
+                except httpx.ConnectError:
+                    await asyncio.sleep(0.02)
+            url = "/api/v1/datasets/kb/documents"
+            body = zip_upload([("one/report.txt", "电话13800138000"), ("two/report.txt", "邮箱private@example.com"), ("三/摘要.md", "# 星桥机密项目")]).read()
+            headers = {"Authorization": "Bearer zip-local-test"}
+            assert (await client.post(url, files={"file": ("batch.zip", body)})).status_code == 401
+            denied = await client.post(url, headers={**headers, "X-Test-Deny": "1"}, files={"file": ("batch.zip", body)})
+            assert denied.json()["code"] == RetCode.AUTHENTICATION_ERROR
+            assert not list(object_dir.rglob("*.txt"))
+            response = await client.post(url, headers=headers, files={"file": ("batch.zip", body)})
+            result = response.json()
+            assert response.status_code == 200 and result["code"] == 0, result
+            docs = result["data"]
+            assert len(docs) == 3 and len({doc["id"] for doc in docs}) == 3
+            assert all(doc["dataset_id"] == "kb" and doc["run"] == "UNSTART" for doc in docs)
+            assert rag.models.Document.select().count() == rag.models.Knowledgebase.get_by_id("kb").doc_num == 3
+            objects = [p for p in object_dir.rglob("*") if p.is_file()]
+            assert len(objects) == 3 and not any(p.suffix == ".zip" for p in objects)
+            text = "\n".join(p.read_text(encoding="utf-8") for p in objects)
+            if protected == "1":
+                assert "13800138000" not in text and "private@example.com" not in text and "星桥机密项目" not in text
+                assert text.count("[已剔除]") == 3
+                for doc in list(rag.models.Document.select()):
+                    rag.service.verify_document(doc.id, "tenant", "kb", "kb", doc.location)
+                assert rag.models.RedactionRecord.select().count() == 3
+            else:
+                assert "13800138000" in text and "private@example.com" in text
+                assert [d["name"] for d in docs] == ["report.txt", "report(1).txt", "摘要.md"]
+                assert rag.models.RedactionRecord.select().count() == 0
+            unsafe = zip_upload([("ok.txt", "public"), ("../private-13800138000.txt", "raw")]).read()
+            rejected = await client.post(url, headers=headers, files=[("file", ("plain.txt", b"plain")), ("file", ("bad.zip", unsafe))])
+            assert rejected.json() == {"code": RetCode.ARGUMENT_ERROR, "message": "ZIP_UNSAFE_PATH"}
+            assert rag.models.Document.select().count() == 3
+            assert len([p for p in object_dir.rglob("*") if p.is_file()]) == 3
+            print(
+                json.dumps(
+                    {
+                        "test": "ZIP_LOCAL_HTTP",
+                        "redaction": protected == "1",
+                        "uploaded_documents": len(docs),
+                        "disk_objects": len(objects),
+                        "response_code": result["code"],
+                        "unsafe_zip_code": rejected.json()["code"],
+                        "receipt_count": rag.models.RedactionRecord.select().count(),
+                    }
+                )
+            )
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(server, timeout=10)

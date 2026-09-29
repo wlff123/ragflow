@@ -88,7 +88,7 @@ def install(app):
         from quart import jsonify, request
 
         if enabled() and not allowed(request.endpoint, request.method, request.args):
-            return jsonify(code=403, message="脱敏验证模式仅开放本地 TXT/Markdown/CSV 上传及解析检索；该入口暂未适配。", data=None), 403
+            return jsonify(code=403, message="脱敏验证模式仅开放本地 TXT/Markdown/CSV（可用 ZIP 打包）上传及解析检索；该入口暂未适配。", data=None), 403
 
     @app.errorhandler(RedactionError)
     async def redaction_error(error):

@@ -2,6 +2,7 @@
 
 import io
 import json
+import zipfile
 
 import pytest
 from werkzeug.datastructures import FileStorage
@@ -28,5 +29,17 @@ def policy(tmp_path, monkeypatch):
 def upload():
     def make(text, name="source.txt"):
         return FileStorage(stream=io.BytesIO(text.encode("utf-8") if isinstance(text, str) else text), filename=name)
+
+    return make
+
+
+@pytest.fixture
+def zip_upload(upload):
+    def make(entries, name="batch.zip", compression=zipfile.ZIP_DEFLATED):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", compression=compression) as archive:
+            for path, content in entries:
+                archive.writestr(path, content)
+        return upload(stream.getvalue(), name)
 
     return make

@@ -79,6 +79,7 @@ from api.utils.file_utils import filename_type, thumbnail
 from api.utils.file_response import apply_preview_file_response_headers
 from api.utils.web_utils import CONTENT_TYPE_MAP, html2pdf, is_valid_url, apply_safe_file_response_headers
 from common.ssrf_guard import assert_url_is_safe
+from common.zip_upload import ZipUploadError
 from rag.nlp import search
 
 
@@ -679,14 +680,17 @@ async def _upload_local_documents(kb, tenant_id):
         except (json.JSONDecodeError, TypeError):
             parser_config_override = None
 
-    err, files = await thread_pool_exec(
-        FileService.upload_document,
-        kb,
-        file_objs,
-        tenant_id,
-        parent_path=form.get("parent_path"),
-        parser_config_override=parser_config_override,
-    )
+    try:
+        err, files = await thread_pool_exec(
+            FileService.upload_document,
+            kb,
+            file_objs,
+            tenant_id,
+            parent_path=form.get("parent_path"),
+            parser_config_override=parser_config_override,
+        )
+    except ZipUploadError as error:
+        return get_error_data_result(message=str(error), code=RetCode.ARGUMENT_ERROR)
 
     # Handle partial success: some files uploaded successfully, some had errors
     is_partial_success = err and files

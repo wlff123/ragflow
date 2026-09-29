@@ -584,15 +584,21 @@ class FileService(CommonService):
     @DB.connection_context()
     def upload_document(self, kb, file_objs, user_id, src="local", parent_path: str | None = None, parser_config_override: dict | None = None):
         from common.enterprise_redaction import RedactionError, enabled
+        from common.zip_upload import expand_zip_uploads
 
         protected = enabled()
+        zip_limits = {}
         if protected:
-            from common.enterprise_redaction.engine import prepare_files, validate_text_fields
+            from common.enterprise_redaction.engine import MAX_BYTES, MAX_FILES, prepare_files, validate_text_fields
 
             if src != "local" or parent_path or parser_config_override:
                 raise RedactionError("REDACTION_UPLOAD_OPTIONS_UNSUPPORTED")
             validate_text_fields(kb.parser_config)
-            file_objs = prepare_files(list(file_objs), kb.tenant_id, kb.id)
+            zip_limits = dict(max_files=MAX_FILES, max_file_bytes=MAX_BYTES, max_total_bytes=MAX_FILES * MAX_BYTES)
+        if src == "local":
+            file_objs = expand_zip_uploads(file_objs, is_supported=lambda name: filename_type(name) != FileType.OTHER.value, **zip_limits)
+        if protected:
+            file_objs = prepare_files(file_objs, kb.tenant_id, kb.id)
 
         root_folder = self.get_root_folder(user_id)
         pf_id = root_folder["id"]
