@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"ragflow/internal/common"
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
 
@@ -31,7 +32,7 @@ func TestIsDatasetCompilationChunk(t *testing.T) {
 		{name: "document compilation", chunk: map[string]interface{}{"scope_kwd": "doc", "compile_kwd": "graph", "doc_id": "doc-1", "kb_id": "kb-1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isDatasetCompilationChunk(tt.chunk); got != tt.want {
+			if got := common.IsDatasetCompilationChunk(tt.chunk); got != tt.want {
 				t.Fatalf("isDatasetCompilationChunk(%v) = %v, want %v", tt.chunk, got, tt.want)
 			}
 		})
@@ -190,4 +191,24 @@ func newRetrievalTestDB(t *testing.T, docIDs ...string) *gorm.DB {
 	dao.DB = db
 	t.Cleanup(func() { dao.DB = oldDB })
 	return db
+}
+
+func TestPruneDeletedChunksExcludesUnprocessedSensitiveDocuments(t *testing.T) {
+	db := newRetrievalTestDB(t, "ordinary", "unsafe", "safe")
+	if err := db.Model(&entity.Document{}).Where("id IN ?", []string{"unsafe", "safe"}).Update("security_processing_enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.Document{}).Where("id = ?", "safe").Update("security_processed", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := &retrievalCountEngine{}
+	chunks := []map[string]interface{}{{"id": "a", "doc_id": "ordinary"}, {"id": "b", "doc_id": "unsafe"}, {"id": "c", "doc_id": "safe"}}
+	result := &RetrievalSearchResult{IDs: []string{"a", "b", "c"}, Chunks: chunks, Field: engine.GetFields(chunks, []string{"doc_id"}), Total: 3}
+	out, err := NewRetrievalService(engine, &dao.DocumentDAO{}).PruneDeletedChunks(t.Context(), result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(out.IDs, []string{"a", "c"}) {
+		t.Fatalf("unsafe result retained: %v", out.IDs)
+	}
 }

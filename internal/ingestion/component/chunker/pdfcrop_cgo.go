@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"image"
+	"ragflow/internal/sensitive"
 	"sync"
 	"sync/atomic"
 
@@ -38,6 +39,9 @@ import (
 // (nil, nil) when no storage reference is present or the bytes are not a PDF,
 // so callers can treat a nil engine as "no cropping".
 func newPDFEngineFromUpstream(ctx context.Context, db *gorm.DB, up schema.ChunkerFromUpstream) (deepdoctype.PDFEngine, error) {
+	if sensitive.FromContext(ctx) != nil {
+		return nil, nil
+	}
 	var data []byte
 	var err error
 	switch {
@@ -116,6 +120,9 @@ func cropConcurrency() int {
 // pool. The pdfium CGO render is serialized by pdfsync.Mu inside the engine, so
 // concurrent renders are safe — only the Go-side encode runs in parallel.
 func cropImageChunks(ctx context.Context, engine deepdoctype.PDFEngine, chunks []schema.ChunkDoc) []schema.ChunkDoc {
+	if sensitive.FromContext(ctx) != nil {
+		return chunks
+	}
 	if engine == nil {
 		return chunks
 	}

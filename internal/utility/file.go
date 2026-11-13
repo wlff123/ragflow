@@ -177,7 +177,7 @@ func FilenameType(filename string) FileType {
 	}
 
 	docExtensions := []string{
-		"msg", "eml", "doc", "docx", "ppt", "pptx", "yml", "xml", "htm", "json", "jsonl", "ldjson",
+		"msg", "eml", "doc", "docx", "ppt", "pptx", "yml", "yaml", "xml", "htm", "json", "jsonl", "ldjson",
 		"csv", "txt", "ini", "xls", "xlsx", "wps", "wpt", "et", "ett", "dps", "dpt", "rtf", "hlp", "pages", "numbers", "key",
 		"md", "markdown", "mdx", "py", "js", "java", "c", "cpp", "h", "php", "go", "ts", "sh", "cs", "kt",
 		"html", "sql", "epub",

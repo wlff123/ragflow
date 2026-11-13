@@ -1637,7 +1637,7 @@ func splitGeneralChildrenWithSources(chunks []schema.ChunkDoc, sources [][]pdfSo
 }
 
 func splitKeepingGeneralDelimiter(text string, pattern *regexp.Regexp) []string {
-	matches := pattern.FindAllStringIndex(text, -1)
+	matches := delimiterMatches(text, pattern)
 	if len(matches) == 0 {
 		return []string{text}
 	}

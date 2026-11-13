@@ -120,7 +120,7 @@ func splitByDelim(text string, pattern *regexp.Regexp, keepDelim bool) []string 
 	if pattern == nil {
 		return []string{text}
 	}
-	idxs := pattern.FindAllStringIndex(text, -1)
+	idxs := delimiterMatches(text, pattern)
 	if len(idxs) == 0 {
 		return []string{text}
 	}

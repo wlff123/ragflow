@@ -398,12 +398,16 @@ func (s *DocumentService) toResponseWithTask(ctx context.Context, doc *entity.Do
 		ingestionStatus = task.Status
 	}
 	return &DocumentResponse{
-		ID:                doc.ID,
-		Name:              doc.Name,
-		KbID:              doc.KbID,
-		ParserID:          doc.ParserID,
-		PipelineID:        doc.PipelineID,
-		PipelineVersionID: doc.PipelineVersionID,
+		SecurityProcessingEnabled: doc.SecurityProcessingEnabled,
+		SecurityProcessed:         doc.SecurityProcessed,
+		SensitiveReplacementCount: doc.SensitiveReplacementCount,
+		SecurityFailureReason:     doc.SecurityFailureReason,
+		ID:                        doc.ID,
+		Name:                      doc.Name,
+		KbID:                      doc.KbID,
+		ParserID:                  doc.ParserID,
+		PipelineID:                doc.PipelineID,
+		PipelineVersionID:         doc.PipelineVersionID,
 		// Design section 6.3 (! indicator): true when the pinned version is no
 		// longer the latest of its canvas. Informational only; never blocks parse.
 		PipelineVersionOutdated: documentPipelineVersionOutdatedWith(ctx, latestByCanvas, doc.PipelineID, doc.PipelineVersionID),

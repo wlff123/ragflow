@@ -8,6 +8,7 @@ import (
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
 	"ragflow/internal/permission"
+	"ragflow/internal/server"
 	"ragflow/internal/storage"
 	"ragflow/internal/utility"
 	"strings"
@@ -608,11 +609,16 @@ func (s *FileService) MoveFiles(ctx context.Context, srcFileIDs []string, destFi
 		if len(srcFileIDs) > 1 {
 			return errors.New("new name can only be used with a single file")
 		}
+		file := filesByID[srcFileIDs[0]]
+		if file.Type != FileTypeFolder {
+			if newName, err = s.sanitizeLinkedName(ctx, file.ID, newName); err != nil {
+				return err
+			}
+		}
 		if strings.Contains(newName, "/") {
 			return errors.New(`Name cannot contain "/"`)
 		}
 
-		file := filesByID[srcFileIDs[0]]
 		if file.Type != FileTypeFolder && utility.GetFileExtension(file.Name) != utility.GetFileExtension(newName) {
 			return errors.New("The extension of file can't be changed")
 		}
@@ -709,6 +715,41 @@ func (s *FileService) checkSourcesDisjoint(ctx context.Context, files []*entity.
 	}
 
 	return true, ""
+}
+
+// sanitizeLinkedName cleans a file's new name before any write when a linked
+// document has pre-ingestion sensitive processing enabled, so the File and
+// every linked document receive the same cleaned name.
+func (s *FileService) sanitizeLinkedName(ctx context.Context, fileID, name string) (string, error) {
+	informs, err := s.file2DocumentDAO.GetByFileID(ctx, dao.DB, fileID)
+	if err != nil {
+		return "", err
+	}
+	ids := make([]string, 0, len(informs))
+	for _, inform := range informs {
+		if inform.DocumentID != nil {
+			ids = append(ids, *inform.DocumentID)
+		}
+	}
+	docs, err := dao.NewDocumentDAO().GetByIDs(ctx, dao.DB, ids)
+	if err != nil {
+		return "", err
+	}
+	for _, doc := range docs {
+		if !doc.SecurityProcessingEnabled {
+			continue
+		}
+		p := server.GetSensitiveProcessor()
+		if err := p.Check(ctx); err != nil {
+			return "", err
+		}
+		cleaned, err := p.Engine.Clean(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		return cleaned.Text, nil
+	}
+	return name, nil
 }
 
 // renameLinkedDocuments renames every knowledgebase document linked to the

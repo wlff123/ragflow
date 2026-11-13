@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"ragflow/internal/common"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/storage"
 	"ragflow/internal/utility"
 	"strings"
@@ -664,6 +665,8 @@ func (h *FileHandler) LinkToDatasets(c *gin.Context) {
 // any other (internal) error is reported as a server error.
 func linkToDatasetsErrorCode(err error) common.ErrorCode {
 	switch {
+	case sensitive.Reason(err) != "":
+		return common.CodeDataError
 	case errors.Is(err, permission.ErrUnauthenticated), errors.Is(err, permission.ErrMembershipNotFound),
 		errors.Is(err, permission.ErrPermissionDenied), errors.Is(err, permission.ErrResourceNotFound):
 		code, _ := permissionresponse.Normalize(err)

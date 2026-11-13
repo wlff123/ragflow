@@ -19,6 +19,9 @@ package component
 import (
 	"context"
 	"fmt"
+	"io"
+	"ragflow/internal/sensitive"
+	"strings"
 
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
@@ -45,6 +48,25 @@ var ResolveDocumentStorageOverride func(docID string) (*DocumentStorageRef, erro
 // the source PDF to crop section images on demand) can reuse the same
 // storage resolution the Parser uses.
 func FetchBinary(ctx context.Context, bucket, path string) ([]byte, error) {
+	if session := sensitive.FromContext(ctx); session != nil {
+		if session.Processor.Originals == nil {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+		if bucket != session.DatasetID || path != session.OriginalLocation || !strings.HasPrefix(path, session.DatasetID+"/"+session.DocumentID+"/") {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+		original, err := session.Processor.Originals.OpenOriginal(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		defer original.Body.Close()
+		data, err := io.ReadAll(original.Body)
+		if err != nil {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+		return data, nil
+	}
+
 	storageImpl := resolveStorage()
 	if storageImpl == nil {
 		return nil, fmt.Errorf("no storage backend registered")
@@ -72,6 +94,13 @@ func resolveStorage() storage.Storage {
 // source PDF without threading the raw bytes across the component
 // boundary.
 func ResolveDocumentStorage(ctx context.Context, db *gorm.DB, docID string) (*DocumentStorageRef, error) {
+	if session := sensitive.FromContext(ctx); session != nil {
+		if docID != session.DocumentID || session.OriginalLocation == "" {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+		return &DocumentStorageRef{Name: session.Name, Bucket: session.DatasetID, Path: session.OriginalLocation}, nil
+	}
+
 	if ResolveDocumentStorageOverride != nil {
 		return ResolveDocumentStorageOverride(docID)
 	}

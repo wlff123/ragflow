@@ -16,9 +16,13 @@
 
 package config
 
-import "ragflow/internal/common"
+import (
+	"ragflow/internal/common"
+	"ragflow/internal/sensitive"
+)
 
 type Config struct {
+	sensitive               *sensitive.Settings
 	general                 GeneralConfig
 	generalStorageEngineSet bool
 	database                DatabaseConfig

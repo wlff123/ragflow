@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"ragflow/internal/common"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/server/config"
 	"strings"
 	"time"
@@ -71,6 +72,9 @@ func Init(configPath string) error {
 	globalViper = v
 
 	globalConfig = &config.Config{}
+	if err := globalConfig.ParseSensitiveConfig(v); err != nil {
+		return err
+	}
 	err := globalConfig.ParseGeneralConfig(v)
 	if err != nil {
 		return fmt.Errorf("parse general config error: %w", err)
@@ -165,9 +169,25 @@ func Init(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("parse audit log config error: %w", err)
 	}
+	sensitiveProcessor = nil
+	if settings := globalConfig.GetSensitiveSettings(); settings != nil {
+		originals, err := sensitive.NewOriginalStore(settings.OriginalStorage)
+		if err != nil {
+			return err
+		}
+		sensitiveProcessor, err = sensitive.NewProcessor(*settings, originals)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
+
+// GetSensitiveProcessor returns the runtime assembled during server startup.
+var sensitiveProcessor *sensitive.Processor
+
+func GetSensitiveProcessor() *sensitive.Processor { return sensitiveProcessor }
 
 // GetConfig gets the global configuration
 func GetConfig() *config.Config {

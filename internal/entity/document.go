@@ -44,6 +44,11 @@ type Document struct {
 	Suffix            string     `gorm:"column:suffix;size:32;not null;index" json:"suffix"`
 	Status            *string    `gorm:"column:status;size:1;index;default:'1'" json:"status,omitempty"`
 	BaseModel
+	SecurityProcessingEnabled bool    `gorm:"column:security_processing_enabled;not null;default:false" json:"security_processing_enabled"`
+	SecurityProcessed         bool    `gorm:"column:security_processed;not null;default:false" json:"security_processed"`
+	SensitiveReplacementCount *int64  `gorm:"column:sensitive_replacement_count" json:"sensitive_replacement_count"`
+	SecurityFailureReason     string  `gorm:"column:security_failure_reason;size:64;not null;default:''" json:"security_failure_reason"`
+	SecurityProcessingRecord  JSONMap `gorm:"column:security_processing_record;type:longtext" json:"-"`
 }
 
 // DocumentListItem represents a document list row with joined fields.
@@ -57,34 +62,44 @@ type DocumentListItem struct {
 	// (design section 5 sticky snapshot). Returned by the list so the reopened
 	// change-parser dialog can show the saved pin instead of re-adopting the
 	// latest version. Omitted when the document tracks the canvas latest.
-	PipelineVersionID *string    `gorm:"column:pipeline_version_id;size:32" json:"pipeline_version_id,omitempty"`
-	PipelineName      *string    `gorm:"column:pipeline_name" json:"pipeline_name,omitempty"`
-	ParserConfig      string     `gorm:"column:parser_config" json:"parser_config"`
-	SourceType        string     `gorm:"column:source_type" json:"source_type"`
-	Type              string     `gorm:"column:type" json:"type"`
-	CreatedBy         string     `gorm:"column:created_by" json:"created_by"`
-	Nickname          *string    `gorm:"column:nickname" json:"nickname,omitempty"`
-	Name              *string    `gorm:"column:name" json:"name,omitempty"`
-	Location          *string    `gorm:"column:location" json:"location,omitempty"`
-	Size              int64      `gorm:"column:size" json:"size"`
-	TokenNum          int64      `gorm:"column:token_num" json:"token_num"`
-	ChunkNum          int64      `gorm:"column:chunk_num" json:"chunk_num"`
-	Progress          float64    `gorm:"column:progress" json:"progress"`
-	ProgressMsg       *string    `gorm:"column:progress_msg" json:"progress_msg,omitempty"`
-	ProcessBeginAt    *time.Time `gorm:"column:process_begin_at" json:"process_begin_at,omitempty"`
-	ProcessDuration   float64    `gorm:"column:process_duration" json:"process_duration"`
-	ContentHash       *string    `gorm:"column:content_hash" json:"content_hash,omitempty"`
-	Suffix            string     `gorm:"column:suffix" json:"suffix"`
-	IngestionStatus   *string    `gorm:"column:ingestion_status" json:"ingestion_status,omitempty"`
-	PipelineLogID     *string    `gorm:"column:pipeline_log_id" json:"-"`
-	Status            *string    `gorm:"column:status" json:"status,omitempty"`
-	CreateTime        *int64     `gorm:"column:create_time" json:"create_time,omitempty"`
-	CreateDate        *time.Time `gorm:"column:create_date" json:"create_date,omitempty"`
-	UpdateTime        *int64     `gorm:"column:update_time" json:"update_time,omitempty"`
-	UpdateDate        *time.Time `gorm:"column:update_date" json:"update_date,omitempty"`
+	PipelineVersionID         *string    `gorm:"column:pipeline_version_id;size:32" json:"pipeline_version_id,omitempty"`
+	PipelineName              *string    `gorm:"column:pipeline_name" json:"pipeline_name,omitempty"`
+	ParserConfig              string     `gorm:"column:parser_config" json:"parser_config"`
+	SourceType                string     `gorm:"column:source_type" json:"source_type"`
+	Type                      string     `gorm:"column:type" json:"type"`
+	CreatedBy                 string     `gorm:"column:created_by" json:"created_by"`
+	Nickname                  *string    `gorm:"column:nickname" json:"nickname,omitempty"`
+	Name                      *string    `gorm:"column:name" json:"name,omitempty"`
+	Location                  *string    `gorm:"column:location" json:"location,omitempty"`
+	Size                      int64      `gorm:"column:size" json:"size"`
+	TokenNum                  int64      `gorm:"column:token_num" json:"token_num"`
+	ChunkNum                  int64      `gorm:"column:chunk_num" json:"chunk_num"`
+	Progress                  float64    `gorm:"column:progress" json:"progress"`
+	ProgressMsg               *string    `gorm:"column:progress_msg" json:"progress_msg,omitempty"`
+	ProcessBeginAt            *time.Time `gorm:"column:process_begin_at" json:"process_begin_at,omitempty"`
+	ProcessDuration           float64    `gorm:"column:process_duration" json:"process_duration"`
+	ContentHash               *string    `gorm:"column:content_hash" json:"content_hash,omitempty"`
+	Suffix                    string     `gorm:"column:suffix" json:"suffix"`
+	IngestionStatus           *string    `gorm:"column:ingestion_status" json:"ingestion_status,omitempty"`
+	PipelineLogID             *string    `gorm:"column:pipeline_log_id" json:"-"`
+	Status                    *string    `gorm:"column:status" json:"status,omitempty"`
+	CreateTime                *int64     `gorm:"column:create_time" json:"create_time,omitempty"`
+	CreateDate                *time.Time `gorm:"column:create_date" json:"create_date,omitempty"`
+	UpdateTime                *int64     `gorm:"column:update_time" json:"update_time,omitempty"`
+	UpdateDate                *time.Time `gorm:"column:update_date" json:"update_date,omitempty"`
+	SecurityProcessingEnabled bool       `gorm:"column:security_processing_enabled" json:"security_processing_enabled"`
+	SecurityProcessed         bool       `gorm:"column:security_processed" json:"security_processed"`
+	SensitiveReplacementCount *int64     `gorm:"column:sensitive_replacement_count" json:"sensitive_replacement_count"`
+	SecurityFailureReason     string     `gorm:"column:security_failure_reason" json:"security_failure_reason"`
 }
 
 // TableName specify table name
+// SecurityReadable reports whether the document's content may be served: either
+// sensitive processing is off, or it has completed.
+func (d *Document) SecurityReadable() bool {
+	return !d.SecurityProcessingEnabled || d.SecurityProcessed
+}
+
 func (Document) TableName() string {
 	return "document"
 }

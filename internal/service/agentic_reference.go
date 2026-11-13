@@ -161,7 +161,7 @@ func fetchChunksByIDs(ctx context.Context, tenantID string, datasetIDs, ids []st
 		IndexNames:   []string{fmt.Sprintf("ragflow_%s", tenantID)},
 		KbIDs:        datasetIDs,
 		Filter:       map[string]interface{}{"id": ids},
-		SelectFields: []string{"content_with_weight", "docnm_kwd", "doc_id", "kb_id", "img_id", "position_int"},
+		SelectFields: []string{"content_with_weight", "docnm_kwd", "doc_id", "kb_id", "img_id", "position_int", "scope_kwd", "compile_kwd"},
 		Limit:        len(ids),
 	}
 	res, err := de.Search(ctx, req)
@@ -169,7 +169,7 @@ func fetchChunksByIDs(ctx context.Context, tenantID string, datasetIDs, ids []st
 		common.WarnCtx(ctx, "agentic citation chunk fetch failed", zap.Error(err))
 		return nil
 	}
-	return res.Chunks
+	return readableDocumentChunks(ctx, res.Chunks)
 }
 
 // agenticDocAggs aggregates the fetched chunks per document - the doc_aggs

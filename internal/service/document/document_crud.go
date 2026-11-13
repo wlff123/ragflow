@@ -12,6 +12,7 @@ import (
 	"ragflow/internal/ingestion/knowledge_compile"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 	"ragflow/internal/service/billing"
 	"ragflow/internal/storage"
@@ -66,6 +67,9 @@ func (s *DocumentService) DownloadDocument(ctx context.Context, datasetID, docID
 	}
 	if doc == nil || doc.KbID != datasetID {
 		return nil, ErrDocumentNotFound
+	}
+	if doc.SecurityProcessingEnabled {
+		return nil, sensitive.Failure("SP_ORIGINAL_ACCESS_DENIED")
 	}
 	bucket, name, err := s.GetDocumentStorageAddress(ctx, doc)
 	if err != nil {
@@ -308,7 +312,7 @@ func (s *DocumentService) deleteDocumentFull(ctx context.Context, docID string) 
 	}
 
 	fileCleanupCtx := context.WithoutCancel(ctx)
-	if err = s.cleanupFileReferences(fileCleanupCtx, docID, doc.KbID); err != nil {
+	if err = s.cleanupFileReferences(fileCleanupCtx, doc); err != nil {
 		return fmt.Errorf("document deleted but file cleanup failed: %w", err)
 	}
 
@@ -317,9 +321,9 @@ func (s *DocumentService) deleteDocumentFull(ctx context.Context, docID string) 
 
 // RemoveDocumentKeepFile removes a document's chunks/metadata and the document
 // row, decrementing the KB counters (doc_num/chunk_num/token_num), WITHOUT
-// deleting the underlying file record, its storage blob, or its file2document
-// mappings. Mirrors Python DocumentService.remove_document — the caller is
-// responsible for cleaning up the file2document mappings separately.
+// deleting the underlying file record, its ordinary storage blob, or its
+// file2document mappings. Private originals belong to the document and are
+// removed before its locator. The caller cleans up file2document mappings.
 //
 // Chunk + metadata cleanup is delegated to deleteDocEngineData so the keep-
 // file path matches deleteDocumentFull. The doc_deleted event is published
@@ -469,7 +473,15 @@ func (s *DocumentService) deleteDocEngineData(ctx context.Context, docID, tenant
 // document row was actually removed (RowsAffected > 0), guarding against
 // double-decrement on retries or concurrent deletes.
 func (s *DocumentService) deleteDocRecordWithCounters(ctx context.Context, doc *entity.Document, kbID string) error {
-	return dao.DB.Transaction(func(tx *gorm.DB) error {
+	if err := service.DeleteSensitiveOriginal(ctx, doc); err != nil {
+		return err
+	}
+	return s.deleteDocRowWithCounters(ctx, doc, kbID)
+}
+
+// The caller must remove any private original before dropping its locator.
+func (s *DocumentService) deleteDocRowWithCounters(ctx context.Context, doc *entity.Document, kbID string) error {
+	return dao.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Where("id = ?", doc.ID).Delete(&entity.Document{})
 		if result.Error != nil {
 			return fmt.Errorf("failed to delete document %s: %w", doc.ID, result.Error)
@@ -507,7 +519,8 @@ func (s *DocumentService) rollbackAddFileFromKBError(ctx context.Context, doc *e
 // the file is a knowledgebase-owned upload (source_type == knowledgebase) and
 // no other document still references the same file_id. Files linked from file
 // management are only unlinked — the file record and blob stay intact.
-func (s *DocumentService) cleanupFileReferences(ctx context.Context, docID, kbID string) error {
+func (s *DocumentService) cleanupFileReferences(ctx context.Context, doc *entity.Document) error {
+	docID, kbID := doc.ID, doc.KbID
 	mappings, mapErr := s.file2DocumentDAO.GetByDocumentID(ctx, dao.DB, docID)
 	if mapErr != nil {
 		common.Warn(fmt.Sprintf("cleanupFileReferences: failed to get f2d mappings for %s: %v", docID, mapErr))
@@ -559,7 +572,7 @@ func (s *DocumentService) cleanupFileReferences(ctx context.Context, docID, kbID
 			common.Warn(fmt.Sprintf("cleanupFileReferences: failed to delete file %s: %v", fileID, delErr))
 			continue // keep the blob so the live file row still has its object
 		}
-		if file.Location != nil && *file.Location != "" {
+		if !doc.SecurityProcessingEnabled && file.Location != nil && *file.Location != "" {
 			storageImpl := storage.GetStorageFactory().GetStorage()
 			if storageImpl != nil {
 				// Dataset uploads use the KB ID; ParentID is the file-manager folder.

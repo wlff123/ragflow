@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"ragflow/internal/dao"
+	"ragflow/internal/sensitive"
+	"ragflow/internal/server"
 	"ragflow/internal/service"
 	"reflect"
 	"regexp"
@@ -55,6 +57,20 @@ func (s *DocumentService) SetDocumentMetadata(ctx context.Context, docID string,
 	}
 
 	meta = splitCombinedDocumentMetadataValues(meta)
+	if doc.SecurityProcessingEnabled {
+		p := server.GetSensitiveProcessor()
+		if err := p.Check(ctx); err != nil {
+			return err
+		}
+		clean, _, err := p.Engine.CleanValue(ctx, meta)
+		if err != nil {
+			return err
+		}
+		meta, _ = clean.(map[string]interface{})
+		if err := p.Engine.ScanValue(ctx, meta); err != nil {
+			return err
+		}
+	}
 	if err = s.docEngine.UpdateMetadata(ctx, docID, doc.KbID, meta, tenantID); err != nil {
 		return fmt.Errorf("failed to update metadata: %w", err)
 	}
@@ -120,6 +136,9 @@ func (s *DocumentService) GetDocumentMetadataByID(ctx context.Context, docID str
 	doc, err := s.documentDAO.GetByID(ctx, dao.DB, docID)
 	if err != nil {
 		return nil, fmt.Errorf("document not found: %w", err)
+	}
+	if !doc.SecurityReadable() {
+		return nil, sensitive.Failure("SP_NOT_PROCESSED")
 	}
 
 	tenantID, err := s.metadataSvc.GetTenantIDByKBID(ctx, doc.KbID)

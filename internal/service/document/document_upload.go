@@ -11,6 +11,7 @@ import (
 	"ragflow/internal/dao"
 	"ragflow/internal/entity"
 	"ragflow/internal/permission"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 	"ragflow/internal/storage"
 	"ragflow/internal/utility"
@@ -31,7 +32,11 @@ import (
 //
 // Gaps vs Python (documented, not yet ported): thumbnail generation and
 // read_potential_broken_pdf repair.
-func (s *DocumentService) UploadLocalDocuments(ctx context.Context, kb *entity.Knowledgebase, files []*multipart.FileHeader, parentPath string, parserConfigOverride map[string]interface{}) ([]map[string]interface{}, []string) {
+func (s *DocumentService) UploadLocalDocuments(ctx context.Context, kb *entity.Knowledgebase, files []*multipart.FileHeader, parentPath string, parserConfigOverride map[string]interface{}, securityConfig []byte) ([]map[string]interface{}, []string) {
+	enabled, configErr := sensitive.ResolveEnabled(securityConfig, kbSecurityConfig(kb))
+	if configErr != nil {
+		return nil, []string{configErr.Error()}
+	}
 	userID := permission.UserIDFromContext(ctx)
 	if userID == "" {
 		return nil, []string{permission.ErrUnauthenticated.Error()}
@@ -67,10 +72,23 @@ func (s *DocumentService) UploadLocalDocuments(ctx context.Context, kb *entity.K
 		var blob []byte
 		blob, err = readFileHeaderBytes(fh)
 		if err != nil {
+			if enabled {
+				errMsgs = append(errMsgs, "SP_UPLOAD_FAILED")
+				continue
+			}
 			errMsgs = append(errMsgs, fh.Filename+": "+err.Error())
 			continue
 		}
 
+		if enabled {
+			doc, uploadErr := s.uploadSensitiveDocument(ctx, kb, userID, kbFolder.ID, fh.Filename, blob, merged, "local")
+			if uploadErr != nil {
+				errMsgs = append(errMsgs, uploadErr.Error())
+			} else {
+				results = append(results, docToRawMap(doc))
+			}
+			continue
+		}
 		filename, err := common.UniqueFileName(fh.Filename, common.NameLimit255, func(candidate string) (bool, error) {
 			return s.documentDAO.NameExistsInKB(ctx, dao.DB, kb.ID, candidate)
 		})
@@ -137,10 +155,25 @@ func storageObjectPath(parent, filename string, attempt int) string {
 }
 
 // UploadEmptyDocument inserts a zero-byte "virtual" document into the dataset.
-func (s *DocumentService) UploadEmptyDocument(ctx context.Context, kb *entity.Knowledgebase, name string) (map[string]interface{}, common.ErrorCode, error) {
+func (s *DocumentService) UploadEmptyDocument(ctx context.Context, kb *entity.Knowledgebase, name string, securityConfig []byte) (map[string]interface{}, common.ErrorCode, error) {
+	enabled, configErr := sensitive.ResolveEnabled(securityConfig, kbSecurityConfig(kb))
+	if configErr != nil {
+		return nil, common.CodeArgumentError, configErr
+	}
 	userID := permission.UserIDFromContext(ctx)
 	if userID == "" {
 		return nil, common.CodeUnauthorized, permission.ErrUnauthenticated
+	}
+	if enabled {
+		folder, err := s.ensureKBFolder(ctx, kb, userID)
+		if err != nil {
+			return nil, common.CodeServerError, err
+		}
+		doc, err := s.uploadSensitiveDocument(ctx, kb, userID, folder.ID, name, nil, kb.ParserConfig, "local")
+		if err != nil {
+			return nil, common.CodeArgumentError, err
+		}
+		return docToRawMap(doc), common.CodeSuccess, nil
 	}
 	// Fall back to a numbered name when the requested one is already taken.
 	name, err := common.UniqueFileName(name, common.NameLimit255, func(candidate string) (bool, error) {
@@ -267,7 +300,11 @@ func (s *DocumentService) addFileFromKB(ctx context.Context, doc *entity.Documen
 	return nil
 }
 
-func (s *DocumentService) UploadWebDocument(ctx context.Context, kb *entity.Knowledgebase, name, url string) (map[string]interface{}, common.ErrorCode, error) {
+func (s *DocumentService) UploadWebDocument(ctx context.Context, kb *entity.Knowledgebase, name, url string, securityConfig []byte) (map[string]interface{}, common.ErrorCode, error) {
+	enabled, configErr := sensitive.ResolveEnabled(securityConfig, kbSecurityConfig(kb))
+	if configErr != nil {
+		return nil, common.CodeArgumentError, configErr
+	}
 	userID := permission.UserIDFromContext(ctx)
 	if userID == "" {
 		return nil, common.CodeUnauthorized, permission.ErrUnauthenticated
@@ -284,6 +321,9 @@ func (s *DocumentService) UploadWebDocument(ctx context.Context, kb *entity.Know
 
 	blob, headers, _, err := utility.FetchRemoteFileSafely(ctx, url, common.GetMaxDocumentUploadBytes())
 	if err != nil {
+		if enabled {
+			return nil, common.CodeDataError, sensitive.Failure("SP_UPLOAD_FAILED")
+		}
 		return nil, common.CodeDataError, err
 	}
 	contentType := ""
@@ -295,6 +335,13 @@ func (s *DocumentService) UploadWebDocument(ctx context.Context, kb *entity.Know
 		return nil, common.CodeArgumentError, fmt.Errorf("file name cannot be empty")
 	}
 	filename, _, blob = utility.NormalizeUploadInfoContent(filename, contentType, blob)
+	if enabled {
+		doc, err := s.uploadSensitiveDocument(ctx, kb, userID, kbFolder.ID, filename, blob, kb.ParserConfig, "web")
+		if err != nil {
+			return nil, common.CodeArgumentError, err
+		}
+		return docToRawMap(doc), common.CodeSuccess, nil
+	}
 	filename, err = common.UniqueFileName(filename, common.NameLimit255, func(candidate string) (bool, error) {
 		return s.documentDAO.NameExistsInKB(ctx, dao.DB, kb.ID, candidate)
 	})
@@ -339,8 +386,10 @@ func (s *DocumentService) UploadWebDocument(ctx context.Context, kb *entity.Know
 }
 
 func normalizeWebDocumentName(name, contentType string, blob []byte) (string, bool) {
-	filename := utility.SanitizeFilename(name)
-	if filename == "" {
+	// A display filename is not a directory path: preserve Unicode and the
+	// extension used for parser selection, but discard any supplied directories.
+	filename := filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), "\\", "/"))
+	if filename == "" || filename == "." || filename == ".." || filename == "/" || strings.ContainsAny(filename, "\x00\r\n") {
 		return "", false
 	}
 	if filepath.Ext(filename) != "" {
@@ -406,18 +455,22 @@ func cloneParserConfigForDocument(config entity.JSONMap) entity.JSONMap {
 // handler remaps (chunk_num→chunk_count, kb_id→dataset_id).
 func docToRawMap(doc *entity.Document) map[string]interface{} {
 	m := map[string]interface{}{
-		"id":               doc.ID,
-		"kb_id":            doc.KbID,
-		"parser_id":        doc.ParserID,
-		"parser_config":    map[string]interface{}(doc.ParserConfig),
-		"created_by":       doc.CreatedBy,
-		"type":             doc.Type,
-		"source_type":      doc.SourceType,
-		"size":             doc.Size,
-		"chunk_num":        doc.ChunkNum,
-		"token_num":        doc.TokenNum,
-		"suffix":           doc.Suffix,
-		"ingestion_status": "UNSTART",
+		"id":                          doc.ID,
+		"kb_id":                       doc.KbID,
+		"security_processing_enabled": doc.SecurityProcessingEnabled,
+		"security_processed":          doc.SecurityProcessed,
+		"sensitive_replacement_count": doc.SensitiveReplacementCount,
+		"security_failure_reason":     doc.SecurityFailureReason,
+		"parser_id":                   doc.ParserID,
+		"parser_config":               map[string]interface{}(doc.ParserConfig),
+		"created_by":                  doc.CreatedBy,
+		"type":                        doc.Type,
+		"source_type":                 doc.SourceType,
+		"size":                        doc.Size,
+		"chunk_num":                   doc.ChunkNum,
+		"token_num":                   doc.TokenNum,
+		"suffix":                      doc.Suffix,
+		"ingestion_status":            "UNSTART",
 	}
 	if doc.Name != nil {
 		m["name"] = *doc.Name
@@ -452,4 +505,8 @@ func readFileHeaderBytes(fh *multipart.FileHeader) ([]byte, error) {
 		return nil, fmt.Errorf("file exceeds the maximum allowed size of %d bytes", maxBytes)
 	}
 	return blob, nil
+}
+
+func kbSecurityConfig(kb *entity.Knowledgebase) sensitive.DatasetConfig {
+	return sensitive.DatasetConfig{DefaultEnabled: kb.SecurityProcessingDefault, Enforced: kb.SecurityProcessingEnforced}
 }

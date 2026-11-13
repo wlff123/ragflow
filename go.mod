@@ -3,6 +3,7 @@ module ragflow
 go 1.27
 
 require (
+	github.com/dlclark/regexp2 v1.12.0
 	cloud.google.com/go v0.123.0
 	cloud.google.com/go/bigquery v1.82.0
 	cloud.google.com/go/storage v1.63.0
@@ -138,7 +139,6 @@ require (
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect

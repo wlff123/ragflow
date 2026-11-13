@@ -24,6 +24,7 @@ import (
 	"ragflow/internal/ingestion/component/globals"
 	"ragflow/internal/ingestion/component/progress"
 	"ragflow/internal/ingestion/component/schema"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/tokenizer"
 	"ragflow/internal/utility"
 )
@@ -692,6 +693,12 @@ func llmTagChunk(
 	}
 
 	if cached := getTaggerLLMCache(ctx, cache, modelID, chunkID, text, allTags, picked, topN); cached != nil {
+		if session := sensitive.FromContext(ctx); session != nil {
+			if err := session.Processor.Engine.ScanValue(ctx, cached); err != nil {
+				session.Reject(err)
+				return
+			}
+		}
 		chunk[common.TAG_FLD] = cached
 		return
 	}
@@ -719,7 +726,7 @@ func llmTagChunk(
 	temperature := 0.5
 	var result OrderedTagWeights
 	timeoutErr := runtime.WithTimeout(ctx, taggerTimeout, func(timeoutCtx context.Context) error {
-		resp, err := inv.Chat(timeoutCtx, extractorChatRequest{
+		resp, err := invokeExtractorChat(timeoutCtx, inv, extractorChatRequest{
 			Driver:      driver,
 			ModelName:   model,
 			APIKey:      apiKey,
@@ -732,6 +739,12 @@ func llmTagChunk(
 			return nil
 		}
 		result = parseTaggerResponse(resp.Content, topN)
+		if session := sensitive.FromContext(ctx); session != nil {
+			if err := session.Processor.Engine.ScanValue(ctx, result); err != nil {
+				result = nil
+				return session.Reject(err)
+			}
+		}
 		return nil
 	})
 	if timeoutErr != nil {

@@ -641,3 +641,32 @@ func dedupeMetaStrings(input []string) []string {
 	}
 	return out
 }
+
+// MergeDocumentMetadata preserves stored keys absent from the new extraction.
+func MergeDocumentMetadata(existing, incoming map[string]any) map[string]any {
+	merged := make(map[string]any, len(existing)+len(incoming))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+	return SplitCombinedMetadataValues(merged)
+}
+
+// BuiltInDocumentMetadata returns configured values supplied by ingestion.
+func BuiltInDocumentMetadata(name, updatedAt string, config []any) map[string]any {
+	values := make(map[string]any)
+	for _, raw := range config {
+		field, _ := raw.(map[string]any)
+		switch field["key"] {
+		case "file_name":
+			if name != "" {
+				values["file_name"] = name
+			}
+		case "update_time":
+			values["update_time"] = updatedAt
+		}
+	}
+	return values
+}

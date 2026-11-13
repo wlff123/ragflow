@@ -29,6 +29,7 @@ import (
 	"ragflow/internal/entity"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/service"
 
 	"ragflow/internal/utility"
 )
@@ -161,6 +162,9 @@ func (s *File2DocumentService) LinkToDatasets(ctx context.Context, req *LinkToDa
 		}
 	}
 
+	if err := s.validateOrdinaryLinks(ctx, allFileIDs, req.KbIDs); err != nil {
+		return err
+	}
 	// ── 6. Run conversion in background (fire-and-forget) ────────────────────
 	kbIDs := req.KbIDs
 	go func() {
@@ -179,6 +183,10 @@ func (s *File2DocumentService) LinkToDatasets(ctx context.Context, req *LinkToDa
 // convertFiles mirrors Python _convert_files: keep existing links, remove links
 // outside the requested KBs in replace mode, then add any missing links.
 func (s *File2DocumentService) convertFiles(ctx context.Context, fileIDs, kbIDs []string, mode string) error {
+	// Recheck after asynchronous dispatch, before removing any existing links.
+	if err := s.validateOrdinaryLinks(ctx, fileIDs, kbIDs); err != nil {
+		return err
+	}
 	userID := permission.UserIDFromContext(ctx)
 	replaceExisting := mode != "add"
 	kbIDs = dedupeStrings(kbIDs)
@@ -231,6 +239,9 @@ func (s *File2DocumentService) convertFiles(ctx context.Context, fileIDs, kbIDs 
 			if err != nil || kb == nil {
 				continue
 			}
+			if err := service.ValidateOrdinaryImport(kb, nil); err != nil {
+				return err
+			}
 
 			// Mirror Python duplicate_name: generate a non-colliding document
 			// name within the dataset so that linking does not silently create
@@ -279,6 +290,40 @@ func (s *File2DocumentService) convertFiles(ctx context.Context, fileIDs, kbIDs 
 			if err = s.file2DocumentDAO.Create(ctx, dao.DB, mapping); err != nil {
 				common.Warn("convertFiles: Create file2document mapping failed",
 					zap.String("fileID", fileID), zap.String("docID", doc.ID), zap.Error(err))
+			}
+		}
+	}
+	return nil
+}
+
+func (s *File2DocumentService) validateOrdinaryLinks(ctx context.Context, fileIDs, kbIDs []string) error {
+	for _, kbID := range kbIDs {
+		kb, err := s.kbDAO.GetByID(ctx, dao.DB, kbID)
+		if err != nil {
+			return ErrLinkDatasetNotFound
+		}
+		if err := service.ValidateOrdinaryImport(kb, nil); err != nil {
+			return err
+		}
+	}
+	for _, fileID := range fileIDs {
+		mappings, err := s.file2DocumentDAO.GetByFileID(ctx, dao.DB, fileID)
+		if err != nil {
+			return ErrLinkInternal
+		}
+		for _, mapping := range mappings {
+			if mapping.DocumentID == nil {
+				continue
+			}
+			doc, err := s.documentDAO.GetByID(ctx, dao.DB, *mapping.DocumentID)
+			if errorsIsRecordNotFound(err) {
+				continue
+			}
+			if err != nil {
+				return ErrLinkInternal
+			}
+			if err := service.ValidateOrdinaryImport(nil, doc); err != nil {
+				return err
 			}
 		}
 	}

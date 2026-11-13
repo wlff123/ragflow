@@ -1,6 +1,9 @@
 package service
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // CheckEmbeddingRequest is the request structure for checking embedding compatibility.
 type CheckEmbeddingRequest struct {
@@ -159,6 +162,7 @@ type MetadataConfigRequest struct {
 
 // CreateDatasetRequest represents the request for creating a dataset.
 type CreateDatasetRequest struct {
+	SecurityConfig json.RawMessage        `json:"security_config,omitempty"`
 	Name           string                 `json:"name" binding:"required"`
 	EmbeddingModel *string                `json:"embedding_model,omitempty"`
 	ParserConfig   map[string]interface{} `json:"parser_config,omitempty"`
@@ -183,6 +187,7 @@ type DatasetConnectorRequest struct {
 
 // UpdateDatasetRequest represents the request for updating a dataset.
 type UpdateDatasetRequest struct {
+	SecurityConfig json.RawMessage            `json:"security_config,omitempty"`
 	Name           *string                    `json:"name,omitempty"`
 	Avatar         *string                    `json:"avatar,omitempty"`
 	Description    *string                    `json:"description,omitempty"`

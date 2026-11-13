@@ -79,6 +79,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"ragflow/internal/sensitive"
 	"strings"
 	"unicode/utf8"
 
@@ -610,6 +611,11 @@ func (c *ParserComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[st
 	// instead of relying on this output re-emitting it. The Go runtime
 	// forwards only this explicit output to the next node, so shared
 	// fields must live in Globals.
+	// Seal the complete output, including storage references, so downstream
+	// verification sees exactly the data that was checked here.
+	if err := cleanParserOutput(ctx, out); err != nil {
+		return nil, err
+	}
 	globals.PublishGlobals(ctx, out)
 	items, _ := out["json"].([]parser.DocItem)
 	logParserOutput(dispatched, items)
@@ -658,6 +664,12 @@ func reportParserWarnings(ctx context.Context, warnings []string) {
 // that mistakenly hands a base64 string sees the failure
 // immediately (mirrors pipeline_chunker's "no try-base64" rule).
 func readParserBinary(ctx context.Context, db *gorm.DB, inputs map[string]any) ([]byte, error) {
+	if session := sensitive.FromContext(ctx); session != nil {
+		// The source was bound by the executor; component parameters cannot redirect
+		// a secure run to inline bytes, an arbitrary object or a linked file.
+		return FetchBinary(ctx, session.DatasetID, session.OriginalLocation)
+	}
+
 	if inputs == nil {
 		return nil, nil
 	}

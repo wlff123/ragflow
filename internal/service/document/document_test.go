@@ -1406,7 +1406,7 @@ func TestUploadLocalDocuments_MirrorsPythonCoreFields(t *testing.T) {
 	fh := makeTestFileHeader(t, "file", "deck.pptx", []byte("abc"))
 	got, errs := svc.UploadLocalDocuments(ctx, kb, []*multipart.FileHeader{fh}, "nested/path", map[string]interface{}{
 		"table_column_mode": "assist",
-	})
+	}, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -1472,7 +1472,7 @@ func TestUploadLocalDocumentsKeepsStorageKeyWithinByteLimit(t *testing.T) {
 	svc := testDocumentService(t)
 	filename := strings.Repeat("界", 100) + ".pdf"
 	fh := makeTestFileHeader(t, "file", filename, []byte("%PDF-1.7"))
-	got, errs := svc.UploadLocalDocuments(ctx, kb, []*multipart.FileHeader{fh}, "", nil)
+	got, errs := svc.UploadLocalDocuments(ctx, kb, []*multipart.FileHeader{fh}, "", nil, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -1525,7 +1525,7 @@ func TestUploadEmptyDocument_CreatesVirtualDocumentAndFileLink(t *testing.T) {
 
 	ctx := permission.WithIdentity(t.Context(), "user-1", "")
 	svc := testDocumentService(t)
-	got, code, err := svc.UploadEmptyDocument(ctx, kb, "draft.md")
+	got, code, err := svc.UploadEmptyDocument(ctx, kb, "draft.md", nil)
 	if err != nil {
 		t.Fatalf("UploadEmptyDocument error: %v", err)
 	}
@@ -2870,7 +2870,7 @@ func TestCleanupFileReferences_NoMappings(t *testing.T) {
 	svc := testDocumentService(t)
 	// Should not panic with no f2d mappings
 	ctx := t.Context()
-	svc.cleanupFileReferences(ctx, "no-mappings", "kb-1")
+	svc.cleanupFileReferences(ctx, &entity.Document{ID: "no-mappings", KbID: "kb-1"})
 }
 
 func TestCleanupFileReferences_SingleFileDeleted(t *testing.T) {
@@ -2883,7 +2883,7 @@ func TestCleanupFileReferences_SingleFileDeleted(t *testing.T) {
 
 	svc := testDocumentService(t)
 	ctx := t.Context()
-	svc.cleanupFileReferences(ctx, "doc-1", "kb-1")
+	svc.cleanupFileReferences(ctx, &entity.Document{ID: "doc-1", KbID: "kb-1"})
 
 	// f2d gone
 	mappings, _ := dao.NewFile2DocumentDAO().GetByDocumentID(ctx, db, "doc-1")
@@ -2908,7 +2908,7 @@ func TestCleanupFileReferences_SharedFileSurvives(t *testing.T) {
 
 	svc := testDocumentService(t)
 	ctx := t.Context()
-	svc.cleanupFileReferences(ctx, "doc-1", "kb-1")
+	svc.cleanupFileReferences(ctx, &entity.Document{ID: "doc-1", KbID: "kb-1"})
 
 	// f2d for doc-1 gone
 	mappings, _ := dao.NewFile2DocumentDAO().GetByDocumentID(ctx, db, "doc-1")

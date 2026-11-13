@@ -81,6 +81,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"ragflow/internal/ingestion/component/guard"
+	"ragflow/internal/sensitive"
 	"regexp"
 	"slices"
 	"strings"
@@ -372,7 +374,17 @@ func (c *TokenizerComponent) Outputs() map[string]string {
 //     embedding batch (python tokenizer.py:80-82 `if not cleaned_txt:
 //     continue`), but the chunk still carries tokenized fields if
 //     `full_text` is in `search_method`.
-func (c *TokenizerComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (map[string]any, error) {
+func (c *TokenizerComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (result map[string]any, invokeErr error) {
+	session := sensitive.FromContext(ctx)
+	if session != nil {
+		// The input proof ties these chunks to an upstream output that was
+		// already scanned and sealed, so they are not rescanned here.
+		if err := session.RequireOutput(inputs); err != nil {
+			return nil, err
+		}
+		defer guard.Finish(ctx, session, &result, &invokeErr)
+	}
+
 	// Run-level metadata lives in the workflow-wide CanvasState.Globals
 	// bag (seeded at pipeline start, published by the File component),
 	// not in the upstream output map — see GlobalOrInput.
@@ -393,6 +405,10 @@ func (c *TokenizerComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map
 		return nil, err
 	}
 	chunks := chunksFromTokenizerUpstream(upstream)
+	if session != nil && name != session.Name {
+		return nil, sensitive.Failure("SP_PRESPLIT_MISSING")
+	}
+
 	common.Debug("tokenizer stage",
 		zap.String("component", "Tokenizer"),
 		zap.Int("input_chunks", len(chunks)),

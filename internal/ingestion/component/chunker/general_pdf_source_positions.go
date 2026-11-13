@@ -37,7 +37,7 @@ func splitPDFUnits(units []schema.ChunkDoc, sources [][]pdfSourceSpan, pattern *
 		text := removeTag(rawText)
 		var ranges [][2]int
 		if !keepDelimiter && pattern != nil && itemDocType(unit) == "text" && pattern.MatchString(rawText) {
-			for _, part := range splitDroppedDelimiterRanges(len(rawText), pattern.FindAllStringIndex(rawText, -1)) {
+			for _, part := range splitDroppedDelimiterRanges(len(rawText), delimiterMatches(rawText, pattern)) {
 				if strings.TrimSpace(rawText[part[0]:part[1]]) != "" {
 					ranges = append(ranges, part)
 				}

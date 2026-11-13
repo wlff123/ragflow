@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"ragflow/internal/permission"
+	"ragflow/internal/server"
 	"ragflow/internal/service"
 	"strconv"
 	"strings"
@@ -352,6 +353,26 @@ func (s *DocumentService) UpdateDatasetDocument(ctx context.Context, datasetID, 
 		parserUpdates["pipeline_version_id"] = colValue
 	}
 
+	if doc.SecurityProcessingEnabled && len(parserUpdates) > 0 {
+		config := map[string]interface{}(doc.ParserConfig)
+		if changed, ok := parserUpdates["parser_config"].(map[string]interface{}); ok {
+			config = changed
+		}
+		if err := service.ValidateSensitivePipeline(ctx, isPipeline, effParserID, effPipelineID, effectiveVersionID, config); err != nil {
+			return nil, common.CodeArgumentError, err
+		}
+	}
+	if doc.SecurityProcessingEnabled && present["meta_fields"] {
+		p := server.GetSensitiveProcessor()
+		if err := p.Check(ctx); err != nil {
+			return nil, common.CodeArgumentError, err
+		}
+		clean, _, err := p.Engine.CleanValue(ctx, req.MetaFields)
+		if err != nil {
+			return nil, common.CodeArgumentError, err
+		}
+		req.MetaFields, _ = clean.(map[string]interface{})
+	}
 	if present["meta_fields"] {
 		if err = s.replaceDocumentMetadata(ctx, documentID, req.MetaFields); err != nil {
 			return nil, common.CodeDataError, err
@@ -565,6 +586,17 @@ func validateMetaFields(meta map[string]any) error {
 // updateDocumentNameOnly renames a document and re-tokenizes its chunks' title
 // fields with the dataset language, the way ingestion tokenized them.
 func (s *DocumentService) updateDocumentNameOnly(ctx context.Context, doc *entity.Document, kb *entity.Knowledgebase, newName string) error {
+	if doc.SecurityProcessingEnabled {
+		p := server.GetSensitiveProcessor()
+		if err := p.Check(ctx); err != nil {
+			return err
+		}
+		cleaned, err := p.Engine.Clean(ctx, newName)
+		if err != nil {
+			return err
+		}
+		newName = cleaned.Text
+	}
 	if err := s.documentDAO.UpdateByID(ctx, dao.DB, doc.ID, map[string]interface{}{"name": newName}); err != nil {
 		return errors.New("database error (Document rename)")
 	}

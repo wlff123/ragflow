@@ -39,6 +39,7 @@ import (
 	"ragflow/internal/ingestion/mediacache"
 	pipelinepkg "ragflow/internal/ingestion/pipeline"
 	indexdoc "ragflow/internal/ingestion/task/indexdoc"
+	"ragflow/internal/sensitive"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -48,13 +49,14 @@ import (
 // indexed, and these bookkeeping inputs remain for the caller to apply to
 // document state (metadata merge + chunk/token counter bumps).
 type PipelineResult struct {
-	DocID            string
-	KbID             string
-	Metadata         map[string]any
-	Chunks           []map[string]any // populated only in debug (dry-run) mode
-	ChunkCount       int
-	TokenConsumption int
-	Duration         float64 // pipeline wall-clock seconds
+	DocID             string
+	KbID              string
+	Metadata          map[string]any
+	MetadataPersisted bool             // sensitive runs persist checked metadata before confirming safety
+	Chunks            []map[string]any // populated only in debug (dry-run) mode
+	ChunkCount        int
+	TokenConsumption  int
+	Duration          float64 // pipeline wall-clock seconds
 	// DocName, BuiltInMetadataConfig and AutoMetadataEnabled carry what the
 	// document-state finalizer needs to apply built-in metadata
 	// (update_time / file_name), mirroring Python apply_built_in_metadata.
@@ -228,7 +230,42 @@ func (s *PipelineExecutor) KB() *entity.Knowledgebase { return &s.taskCtx.KB }
 func (s *PipelineExecutor) Doc() *entity.Document     { return &s.taskCtx.Doc }
 func (s *PipelineExecutor) Tenant() *entity.Tenant    { return &s.taskCtx.Tenant }
 
-func (s *PipelineExecutor) Execute(ctx context.Context) (*PipelineResult, error) {
+func (s *PipelineExecutor) Execute(ctx context.Context) (result *PipelineResult, executeErr error) {
+	if s.taskCtx.Doc.SecurityProcessingEnabled {
+		if s.deps.DB == nil || s.taskCtx.IngestionTask == nil || s.taskCtx.IngestionTask.PipelineLogID == nil {
+			return nil, sensitive.Failure("SP_UNSUPPORTED_DEPLOYMENT")
+		}
+		round := *s.taskCtx.IngestionTask.PipelineLogID
+		defer func() {
+			if reason := sensitive.Reason(executeErr); reason != "" {
+				saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if err := dao.NewDocumentDAO().FailSecurity(saveCtx, s.deps.DB, s.taskCtx.Doc.ID, round, reason); err != nil {
+					executeErr = errors.Join(executeErr, err)
+				}
+			}
+		}()
+		if err := s.deps.Sensitive.Check(ctx); err != nil {
+			return nil, err
+		}
+		var session *sensitive.Session
+		var err error
+		ctx, session, err = sensitive.WithSession(ctx, s.deps.Sensitive, s.taskCtx.Doc.ID, round, *s.taskCtx.Doc.Name)
+		if err != nil {
+			return nil, err
+		}
+		if s.taskCtx.Doc.Location == nil {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+		session.DatasetID = s.taskCtx.Doc.KbID
+		session.OriginalLocation = *s.taskCtx.Doc.Location
+		if exists, err := session.Processor.Originals.Exists(ctx, session.OriginalLocation); err != nil {
+			return nil, err
+		} else if !exists {
+			return nil, sensitive.Failure("SP_ORIGINAL_UNAVAILABLE")
+		}
+	}
+
 	start := time.Now()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -245,6 +282,12 @@ func (s *PipelineExecutor) Execute(ctx context.Context) (*PipelineResult, error)
 		s.persistResolvedPipeline(context.WithoutCancel(ctx))
 	}
 
+	if sensitive.FromContext(ctx) != nil {
+		overrides := pipelinepkg.NormalizeParserConfigSetups(map[string]any(s.taskCtx.Doc.ParserConfig))
+		if err := sensitive.ValidatePipeline([]byte(dsl), overrides); err != nil {
+			return nil, err
+		}
+	}
 	pipelineOutput, pipelineDSL, err := s.runPipelineFunc(ctx, dsl)
 	if err != nil {
 		return nil, err
@@ -256,7 +299,7 @@ func (s *PipelineExecutor) Execute(ctx context.Context) (*PipelineResult, error)
 		return s.collectDebugOutput(ctx, pipelineOutput, start)
 	}
 
-	result, err := s.processOutput(ctx, pipelineOutput, start)
+	result, err = s.processOutput(ctx, pipelineOutput, start)
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +341,16 @@ func (s *PipelineExecutor) collectDebugOutput(ctx context.Context, pipelineOutpu
 }
 
 func (s *PipelineExecutor) processOutput(ctx context.Context, pipelineOutput map[string]any, start time.Time) (*PipelineResult, error) {
+	session := sensitive.FromContext(ctx)
+	if session != nil {
+		if !session.Parsed {
+			return nil, sensitive.Failure("SP_PRESPLIT_MISSING")
+		}
+		if err := session.RequireOutput(pipelineOutput); err != nil {
+			return nil, err
+		}
+	}
+
 	if pipelineOutput == nil {
 		s.purgeRunState(ctx)
 		return nil, nil
@@ -360,6 +413,17 @@ func (s *PipelineExecutor) processOutput(ctx context.Context, pipelineOutput map
 	}
 	indexChunks := append(chunks, parentChunks...)
 	indexdoc.StampDatasetPagerank(indexChunks, s.taskCtx.KB.Pagerank)
+	if session != nil {
+		if err := session.Processor.Engine.ScanChunks(ctx, indexChunks); err != nil {
+			return nil, err
+		}
+		if err := s.persistSensitiveMetadata(ctx, session, metadata); err != nil {
+			return nil, err
+		}
+		if err := dao.NewDocumentDAO().ConfirmSecurity(ctx, s.deps.DB, session.DocumentID, session.Round, session.Processor.Engine.Version, session.Result); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.indexWriter.Write(ctx, indexChunks); err != nil {
 		if cleanupErr := s.compensateFailedIndexWrite(ctx, indexChunks); cleanupErr != nil {
 			return nil, fmt.Errorf("write chunks: %w; compensate partial index write: %v", err, cleanupErr)
@@ -404,6 +468,7 @@ func (s *PipelineExecutor) processOutput(ctx context.Context, pipelineOutput map
 		DocID:                 s.taskCtx.Doc.ID,
 		KbID:                  s.taskCtx.Doc.KbID,
 		Metadata:              metadata,
+		MetadataPersisted:     session != nil,
 		ChunkCount:            chunkCount,
 		TokenConsumption:      embeddingTokenConsumption,
 		Duration:              s.terminalDuration(start),

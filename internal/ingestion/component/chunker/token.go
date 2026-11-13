@@ -437,7 +437,8 @@ func overlapCut(prevText string, overlappedPct float64) int {
 	if cut >= len(runes) {
 		return len(runes)
 	}
-	return cut
+	byteCut := len(string(runes[:cut]))
+	return len([]rune(visible[:placeholderCut(visible, byteCut, true)]))
 }
 
 // computeOverlapPrefix returns (overlapText, overlapTokenCount) carved from
@@ -531,7 +532,7 @@ func (c *TokenChunkerComponent) mergeByTokenSize(text string, delimPattern, chil
 			// units. A unit that still exceeds the budget is re-split by the
 			// hard-cap expansion in mergeUnits (sentence boundaries first,
 			// hard token-split fallback), so no chunk ever exceeds the target.
-			parts := sentenceDelimiter.Split(sec, -1)
+			parts := splitByDelim(sec, sentenceDelimiter, false)
 			hadPart := false
 			for _, part := range parts {
 				// Keep the raw split fragment, including any inter-line
@@ -1396,7 +1397,7 @@ func splitSentencesLossless(text string) []string {
 	if text == "" {
 		return nil
 	}
-	idxs := sentenceDelimiter.FindAllStringIndex(text, -1)
+	idxs := delimiterMatches(text, sentenceDelimiter)
 	var out []string
 	prev := 0
 	for _, idx := range idxs {
@@ -1431,6 +1432,19 @@ func splitSentencesLossless(text string) []string {
 func hardSplitPiece(text string, docType string, target int) []schema.ChunkDoc {
 	if text == "" {
 		return nil
+	}
+	// Split ordinary spans with the existing BPE path, but emit each placeholder
+	// whole. Byte offsets avoid token boundaries inside a multibyte placeholder.
+	if atoms := placeholderAtoms(text); len(atoms) > 0 && target > 0 && tokenizeStr(text) > target {
+		var out []schema.ChunkDoc
+		start := 0
+		for _, atom := range atoms {
+			out = append(out, hardSplitPiece(text[start:atom[0]], docType, target)...)
+			value := text[atom[0]:atom[1]]
+			out = append(out, schema.ChunkDoc{Text: value, DocType: docType, TKNums: intPtr(tokenizeStr(value))})
+			start = atom[1]
+		}
+		return append(out, hardSplitPiece(text[start:], docType, target)...)
 	}
 	tokens, ok := encodeTokens(text)
 	if !ok {
@@ -1557,7 +1571,7 @@ func hardSplitPieceByteLoop(text string, docType string, target int) []schema.Ch
 				break
 			}
 		}
-		cut := adjustCutPastTag(rest, len(head), target)
+		cut := placeholderCut(rest, adjustCutPastTag(rest, len(head), target), false)
 		if cut <= 0 || cut >= len(rest) {
 			// Safety: never stall. An empty cut or a whole-text cut means no
 			// progress is possible; emit the remaining text as the last piece.
@@ -1622,6 +1636,8 @@ func overlapFitPrefix(overlap, current string, target int) (string, int) {
 	}
 	runes := []rune(overlap)
 	for c := 1; c <= len(runes); c++ {
+		byteCut := len(string(runes[:c]))
+		c = len([]rune(overlap[:placeholderCut(overlap, byteCut, true)]))
 		suffix := string(runes[c:])
 		if tokenizeStr(suffix+current) <= target {
 			return suffix, c

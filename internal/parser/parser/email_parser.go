@@ -131,7 +131,9 @@ func (p *EmailParser) parseEmail(ctx context.Context, filename string, data []by
 	content["doc_type_kwd"] = "text"
 	items := []map[string]any{content}
 	if headerText := searchableEmailHeaders(content); headerText != "" {
-		items = append(items, NewTextJSONItem(headerText).ToMap())
+		// Headers are a separate semantic block. Preserve that boundary before
+		// any pre-chunk inspection joins adjacent text items.
+		items = append(items, NewTextJSONItem("\n"+headerText).ToMap())
 	}
 	items = append(items, extraItems...)
 	return ParseResult{

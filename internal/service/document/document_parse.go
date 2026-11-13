@@ -132,6 +132,9 @@ func (s *DocumentService) StartParseDocuments(ctx context.Context, doc *entity.D
 	}
 
 	if opts.RerunWithDelete {
+		if err := service.ValidateSensitiveDocument(ctx, doc); err != nil {
+			return err
+		}
 		if err := s.clearDocumentParseResults(ctx, doc, kb.TenantID, taskTerminalMessageSuperseded); err != nil {
 			return err
 		}
