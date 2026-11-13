@@ -14,6 +14,7 @@ import (
 	pipelinepkg "ragflow/internal/ingestion/pipeline"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 	"ragflow/internal/storage"
 
@@ -279,21 +280,27 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 	}
 	parserConfig = service.ApplyComponentScopedParserConfig(parserConfig, llmID)
 
+	securityConfig, err := sensitive.DecodeDatasetConfig(req.SecurityConfig, sensitive.DatasetConfig{DefaultEnabled: true})
+	if err != nil {
+		return nil, common.CodeArgumentError, err
+	}
 	kb := &entity.Knowledgebase{
-		ID:                kbID,
-		PipelineVersionID: pipelineVersionID,
-		Name:              name,
-		UserID:            userID,
-		TenantID:          tenantID,
-		CreatedBy:         userID,
-		ParserID:          parserID,
-		PipelineID:        pipelineID,
-		ParserConfig:      entity.JSONMap(parserConfigMap),
-		Permission:        visibility,
-		Language:          language,
-		EmbdID:            embdID,
-		TenantEmbdID:      stringPtrIfNotEmpty(tenantEmbdID),
-		Status:            &status,
+		SecurityProcessingDefault:  securityConfig.DefaultEnabled,
+		SecurityProcessingEnforced: securityConfig.Enforced,
+		ID:                         kbID,
+		PipelineVersionID:          pipelineVersionID,
+		Name:                       name,
+		UserID:                     userID,
+		TenantID:                   tenantID,
+		CreatedBy:                  userID,
+		ParserID:                   parserID,
+		PipelineID:                 pipelineID,
+		ParserConfig:               entity.JSONMap(parserConfigMap),
+		Permission:                 visibility,
+		Language:                   language,
+		EmbdID:                     embdID,
+		TenantEmbdID:               stringPtrIfNotEmpty(tenantEmbdID),
+		Status:                     &status,
 	}
 
 	if err = dao.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -490,6 +497,12 @@ func (d *DatasetService) deleteDataset(ctx context.Context, kb *entity.Knowledge
 	cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	for _, document := range documents {
+		if document.SecurityProcessingEnabled {
+			if err := service.DeleteSensitiveOriginal(cleanupCtx, &document); err != nil {
+				return err
+			}
+			continue
+		}
 		if document.Location == nil || *document.Location == "" {
 			continue
 		}

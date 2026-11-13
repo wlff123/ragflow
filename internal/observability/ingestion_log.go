@@ -25,6 +25,7 @@ type CommonLogEmitter struct{}
 
 // EmitIngestLog forwards the event to the common ingest-log sink.
 func (e *CommonLogEmitter) EmitIngestLog(_ context.Context, log common.IngestionLog) {
+	log = common.CleanLogValue(log, common.IngestionLog{ErrorInfo: common.HiddenLogContent})
 	common.LogIngest(&log)
 }
 

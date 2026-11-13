@@ -94,6 +94,19 @@ func TestDocStateUpdater_NilResultIsNoop(t *testing.T) {
 	}
 }
 
+func TestDocStateUpdaterDoesNotRemergeConfirmedMetadata(t *testing.T) {
+	svc := &stubDocStateSvc{metaData: map[string]any{"phone": "13812345678"}}
+	u := &docStateUpdater{docSvc: svc}
+	u.apply(t.Context(), &taskpkg.PipelineResult{
+		DocID: "doc", KbID: "kb", MetadataPersisted: true,
+		Metadata: map[string]any{"category": "safe"}, AutoMetadataEnabled: true,
+		BuiltInMetadataConfig: []any{map[string]any{"key": "file_name"}}, DocName: "guide.txt",
+	})
+	if svc.setCalled || !svc.incrementCalled {
+		t.Fatal("confirmed metadata must be skipped while counts still update")
+	}
+}
+
 func TestDocStateUpdater_EmptyMetadataSkipsMerge(t *testing.T) {
 	svc := &stubDocStateSvc{}
 	u := &docStateUpdater{docSvc: svc}

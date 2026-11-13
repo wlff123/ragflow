@@ -36,6 +36,17 @@ mysql:
   max_connections: 900
   stale_timeout: 300
   max_allowed_packet: ${MYSQL_MAX_PACKET:-1073741824}
+# Explicit isolated storage; defaults match the bundled MinIO deployment.
+# External KS3/S3: override these values and pre-create the private bucket.
+sensitive_processing:
+  rules_path: conf/sensitive_rules.yaml
+  original_storage:
+    endpoint: '${SENSITIVE_ORIGINAL_ENDPOINT}'
+    region: '${SENSITIVE_ORIGINAL_REGION:-us-east-1}'
+    bucket: '${SENSITIVE_ORIGINAL_BUCKET:-ragflow-sensitive-originals}'
+    access_key: '${SENSITIVE_ORIGINAL_ACCESS_KEY}'
+    secret_key: '${SENSITIVE_ORIGINAL_SECRET_KEY}'
+    create_bucket: ${SENSITIVE_ORIGINAL_CREATE_BUCKET:-true}
 minio:
   user: '${MINIO_USER:-rag_flow}'
   password: '${MINIO_PASSWORD:-infini_rag_flow}'

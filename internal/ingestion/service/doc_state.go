@@ -56,7 +56,7 @@ func (u *docStateUpdater) apply(ctx context.Context, r *taskpkg.PipelineResult) 
 	if r == nil {
 		return
 	}
-	if len(r.Metadata) > 0 {
+	if !r.MetadataPersisted && len(r.Metadata) > 0 {
 		if err := mergeDocMetadata(ctx, u.docSvc, r.DocID, r.Metadata); err != nil {
 			common.Warn(fmt.Sprintf("failed to update document metadata: %v", err))
 		}
@@ -66,7 +66,7 @@ func (u *docStateUpdater) apply(ctx context.Context, r *taskpkg.PipelineResult) 
 	// (task_executor_refactor/chunk_post_processor.py): it runs when
 	// auto-metadata is enabled and built-in fields are configured, and its
 	// values overwrite whatever is already stored.
-	if r.AutoMetadataEnabled && len(r.BuiltInMetadataConfig) > 0 {
+	if !r.MetadataPersisted && r.AutoMetadataEnabled && len(r.BuiltInMetadataConfig) > 0 {
 		if err := applyBuiltInMetadata(ctx, u.docSvc, r.DocID, r.DocName, r.BuiltInMetadataConfig); err != nil {
 			common.Warn(fmt.Sprintf("failed to apply built-in metadata: %v", err))
 		}
@@ -85,14 +85,7 @@ func mergeDocMetadata(ctx context.Context, svc docStateSvc, docID string, metada
 	if err != nil {
 		return err
 	}
-	merged := make(map[string]any, len(existing)+len(metadata))
-	for key, value := range existing {
-		merged[key] = value
-	}
-	for key, value := range metadata {
-		merged[key] = value
-	}
-	merged = common.SplitCombinedMetadataValues(merged)
+	merged := common.MergeDocumentMetadata(existing, metadata)
 	return svc.SetDocumentMetadata(ctx, docID, merged)
 }
 
@@ -102,22 +95,7 @@ func mergeDocMetadata(ctx context.Context, svc docStateSvc, docID string, metada
 //   - update_time -> current timestamp "2006-01-02 15:04:05"
 //   - file_name   -> the document name
 func applyBuiltInMetadata(ctx context.Context, svc docStateSvc, docID, docName string, config []any) error {
-	builtIn := make(map[string]any, 2)
-	for _, raw := range config {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, _ := item["key"].(string)
-		switch key {
-		case "update_time":
-			builtIn["update_time"] = time.Now().Format("2006-01-02 15:04:05")
-		case "file_name":
-			if docName != "" {
-				builtIn["file_name"] = docName
-			}
-		}
-	}
+	builtIn := common.BuiltInDocumentMetadata(docName, time.Now().Format("2006-01-02 15:04:05"), config)
 	if len(builtIn) == 0 {
 		return nil
 	}

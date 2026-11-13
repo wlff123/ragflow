@@ -15,6 +15,7 @@ import (
 	"ragflow/internal/parser/parser"
 	"ragflow/internal/parser/tableutil"
 	"ragflow/internal/permission"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 	"ragflow/internal/storage"
 	"ragflow/internal/utility"
@@ -254,6 +255,9 @@ func (s *DocumentService) GetDocumentPreview(ctx context.Context, docID string) 
 		return nil, ErrPreviewDocumentNotFound
 	}
 
+	if doc.SecurityProcessingEnabled {
+		return nil, sensitive.Failure("SP_ORIGINAL_ACCESS_DENIED")
+	}
 	bucket, name, err := s.GetDocumentStorageAddress(ctx, doc)
 	if err != nil {
 		return nil, fmt.Errorf("resolve storage address for document %s: %w", docID, err)

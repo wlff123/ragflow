@@ -5,6 +5,8 @@ services:
   ragflow:
     platform: linux/amd64
     depends_on:
+      minio:
+        condition: service_healthy
       mysql:
         condition: service_healthy
         required: false

@@ -28,6 +28,8 @@ package chunker
 import (
 	"context"
 	"errors"
+	"ragflow/internal/ingestion/component/guard"
+	"ragflow/internal/sensitive"
 	"strings"
 
 	"ragflow/internal/agent/runtime"
@@ -69,7 +71,14 @@ type imageUploadDecorator struct {
 
 // Invoke runs the wrapped chunker, stamps deterministic chunk ids, and uploads
 // any remaining inline or deferred media before the chunks leave the component.
-func (d *imageUploadDecorator) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (map[string]any, error) {
+func (d *imageUploadDecorator) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (result map[string]any, invokeErr error) {
+	if session := sensitive.FromContext(ctx); session != nil {
+		if err := session.RequireOutput(inputs); err != nil {
+			return nil, err
+		}
+		defer guard.Finish(ctx, session, &result, &invokeErr)
+	}
+
 	out, err := d.inner.Invoke(ctx, db, inputs)
 	if err != nil {
 		return nil, err

@@ -377,6 +377,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 				datasets.GET("/:dataset_id/documents", r.documentHandler.ListDocuments)
 				datasets.POST("/:dataset_id/documents", r.documentHandler.UploadDocuments)
 				datasets.GET("/:dataset_id/documents/:document_id", r.documentHandler.DownloadDocument)
+				datasets.GET("/:dataset_id/documents/:document_id/original", r.documentHandler.DownloadOriginal)
 				datasets.PATCH("/:dataset_id/documents/:document_id", r.documentHandler.UpdateDatasetDocument)
 				datasets.DELETE("/:dataset_id/documents", r.documentHandler.DeleteDocuments)
 				datasets.POST("/:dataset_id/documents/:document_id/chunks", r.chunkHandler.AddChunk)

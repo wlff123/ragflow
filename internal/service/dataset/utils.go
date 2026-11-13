@@ -86,6 +86,7 @@ func datasetListItemToMap(latestByCanvas map[string]string, kb *entity.Knowledge
 	item := map[string]interface{}{
 		"id":                         kb.ID,
 		"name":                       kb.Name,
+		"security_config":            map[string]bool{"default_enabled": kb.SecurityProcessingDefault, "enforced": kb.SecurityProcessingEnforced},
 		"avatar":                     stringPointerValue(kb.Avatar),
 		"language":                   stringPointerValue(kb.Language),
 		"description":                stringPointerValue(kb.Description),
@@ -125,6 +126,7 @@ func datasetToMap(ctx context.Context, kb *entity.Knowledgebase) map[string]inte
 		"id":                         kb.ID,
 		"tenant_id":                  kb.TenantID,
 		"name":                       kb.Name,
+		"security_config":            map[string]bool{"default_enabled": kb.SecurityProcessingDefault, "enforced": kb.SecurityProcessingEnforced},
 		"embedding_model":            kb.EmbdID,
 		"permission":                 kb.Permission,
 		"created_by":                 kb.CreatedBy,

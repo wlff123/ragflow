@@ -224,18 +224,18 @@ func (dao *PipelineOperationLogDAO) CreateOpenLog(ctx context.Context, db *gorm.
 		RunCount:        &runCount,
 		TenantID:        input.TenantID,
 		KbID:            input.KbID,
-		ParserID:        input.ParserID,
-		DocumentName:    input.DocumentName,
-		DocumentSuffix:  input.DocumentSuffix,
-		DocumentType:    input.DocumentType,
-		SourceFrom:      input.SourceFrom,
+		ParserID:        common.CleanLogText(input.ParserID),
+		DocumentName:    common.CleanLogText(input.DocumentName),
+		DocumentSuffix:  common.CleanLogText(input.DocumentSuffix),
+		DocumentType:    common.CleanLogText(input.DocumentType),
+		SourceFrom:      common.CleanLogText(input.SourceFrom),
 		Progress:        0,
 		ProcessBeginAt:  &now,
 		ProcessDuration: 0,
 		DSL:             entity.JSONMap{},
 		TaskType:        string(entity.PipelineTaskTypeParse),
 		OperationStatus: input.OperationStatus,
-		Avatar:          input.Avatar,
+		Avatar:          common.CleanLogValue(input.Avatar, (*string)(nil)),
 	}
 	statusValue := "1"
 	log.Status = &statusValue
@@ -244,7 +244,7 @@ func (dao *PipelineOperationLogDAO) CreateOpenLog(ctx context.Context, db *gorm.
 		log.PipelineID = &pipelineID
 	}
 	if input.PipelineTitle != "" {
-		title := input.PipelineTitle
+		title := common.CleanLogText(input.PipelineTitle)
 		log.PipelineTitle = &title
 	}
 	if input.PipelineVersionID != "" {

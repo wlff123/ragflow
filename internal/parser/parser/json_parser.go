@@ -40,6 +40,7 @@ import (
 	"strings"
 
 	"ragflow/internal/parser/charset"
+	"ragflow/internal/sensitive"
 )
 
 // JSONParser handles JSON / JSONL / LDJSON files.
@@ -59,6 +60,32 @@ func (p *JSONParser) String() string {
 func (p *JSONParser) ParseWithResult(ctx context.Context, filename string, data []byte) ParseResult {
 	decoded, encName := charset.DecodeToUTF8(data, "application/json")
 	text := string(bytes.TrimSpace(decoded))
+	if session := sensitive.FromContext(ctx); session != nil && text != "" {
+		clean, err := session.Processor.Engine.CleanJSON(ctx, text)
+		lower := strings.ToLower(filename)
+		if sensitive.Reason(err) == "SP_STRUCTURE_INVALID" && (strings.HasSuffix(lower, ".jsonl") || strings.HasSuffix(lower, ".ldjson")) {
+			var lines []string
+			clean = sensitive.Result{}
+			for _, line := range strings.Split(text, "\n") {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				r, lineErr := session.Processor.Engine.CleanJSON(ctx, line)
+				if lineErr != nil {
+					return ParseResult{Err: lineErr}
+				}
+				lines = append(lines, r.Text)
+				clean.Add(r)
+			}
+			clean.Text = strings.Join(lines, "\n")
+			err = nil
+		}
+		if err != nil {
+			return ParseResult{Err: err}
+		}
+		session.JSONSourceResult = &clean
+		text = clean.Text
+	}
 	if text == "" {
 		return ParseResult{
 			File: map[string]any{

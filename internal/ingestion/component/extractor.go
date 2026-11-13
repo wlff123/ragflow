@@ -41,6 +41,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"ragflow/internal/ingestion/component/guard"
+	"ragflow/internal/sensitive"
 	"regexp"
 	"sort"
 	"strconv"
@@ -587,13 +589,11 @@ func (e *einoExtractorChatInvoker) Chat(ctx context.Context, req extractorChatRe
 	wrapper := models.NewEinoChatModel(cm, chatCfg)
 	// Honour ctx cancel up front so the caller's WithTimeout(...)
 	// is observed even when the driver layer doesn't take a ctx.
-	common.Info(fmt.Sprintf("try to chat with message: %v", req.Messages))
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	out, err := wrapper.Generate(ctx, toExtractorEinoMessages(req.Messages))
 	if err != nil {
-		common.Error(fmt.Sprintf("error when chat with message: %v", req.Messages), err)
 		return nil, err
 	}
 	common.Debug(fmt.Sprintf("extractor: chat completed for model %s, response_length=%d", modelName, len(out.Content)))
@@ -748,7 +748,14 @@ func extractorChunkList(v any) ([]map[string]any, bool) {
 //	                                  short-circuits with an error.
 //	_created_time, _elapsed_time    — stamped by the canvas framework
 //	                                 (realComponentBody), not here.
-func (c *ExtractorComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (map[string]any, error) {
+func (c *ExtractorComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[string]any) (result map[string]any, invokeErr error) {
+	if session := sensitive.FromContext(ctx); session != nil {
+		if err := session.RequireOutput(inputs); err != nil {
+			return nil, err
+		}
+		defer guard.Finish(ctx, session, &result, &invokeErr)
+	}
+
 	if err := c.Param.Validate(); err != nil {
 		return nil, fmt.Errorf("extractor: %w", err)
 	}
@@ -864,15 +871,24 @@ func (c *ExtractorComponent) callTextCached(ctx context.Context, db *gorm.DB, in
 		modelID = extractorCacheModelID(ctx, db, in.llmID)
 	}
 	key := extractorLLMCacheKey(taskType, modelID, systemPrompt, chunkID)
-	if cached, hit := chunkcache.Get(ctx, in.cache, key); hit {
-		return cached, nil
+	res, hit := chunkcache.Get(ctx, in.cache, key)
+	if !hit {
+		var err error
+		res, err = c.callText(ctx, db, in, systemPrompt, chunkText)
+		if err != nil {
+			return "", err
+		}
+		res = cleanExtractionResult(res)
 	}
-	res, err := c.callText(ctx, db, in, systemPrompt, chunkText)
-	if err != nil {
-		return "", err
+	session := sensitive.FromContext(ctx)
+	if session != nil {
+		cleaned, err := session.Processor.Engine.Clean(ctx, res)
+		if err != nil {
+			return "", session.Reject(err)
+		}
+		res = cleaned.Text
 	}
-	res = cleanExtractionResult(res)
-	if res != "" && !strings.Contains(res, "**ERROR**") {
+	if (!hit || session != nil) && res != "" && !strings.Contains(res, "**ERROR**") {
 		chunkcache.Set(ctx, in.cache, key, res)
 	}
 	return res, nil
@@ -1223,10 +1239,8 @@ func (c *ExtractorComponent) runEnableMetadata(ctx context.Context, db *gorm.DB,
 	if modelID == "" {
 		modelID = extractorCacheModelID(ctx, db, in.llmID)
 	}
-	var parsed map[string]any
-	if cached, hit := getMetadataLLMCache(ctx, in.cache, modelID, schemaStr, chunkID); hit {
-		parsed = cached
-	} else {
+	parsed, hit := getMetadataLLMCache(ctx, in.cache, modelID, schemaStr, chunkID)
+	if !hit {
 		metaTemp := extractorTemperature
 		metaIn := extractorInputs{
 			llmID:       in.llmID,
@@ -1248,6 +1262,13 @@ func (c *ExtractorComponent) runEnableMetadata(ctx context.Context, db *gorm.DB,
 			// Every key fell outside the declared field set — nothing to keep.
 			return nil
 		}
+
+	}
+	parsed, err = cleanExtractorMetadata(ctx, parsed)
+	if err != nil {
+		return err
+	}
+	if !hit || sensitive.FromContext(ctx) != nil {
 		setMetadataLLMCache(ctx, in.cache, modelID, schemaStr, chunkID, parsed)
 	}
 	// Merge into the chunk metadata map, preserving existing keys.
@@ -1407,7 +1428,7 @@ func (c *ExtractorComponent) callRaw(ctx context.Context, db *gorm.DB, in extrac
 	callCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	if err := common.RetryWithBackoff(callCtx, extractorRetryMax, extractorRetryDelay, func() error {
-		r, e := inv.Chat(callCtx, req)
+		r, e := invokeExtractorChat(callCtx, inv, req)
 		resp = r
 		return e
 	}, isRetryableLLMError); err != nil {
@@ -1502,6 +1523,10 @@ func isRetryableLLMError(err error) bool {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	var safe safeModelError
+	if errors.As(err, &safe) {
+		return safe.retryable
 	}
 	msg := strings.ToLower(err.Error())
 	for _, s := range []string{

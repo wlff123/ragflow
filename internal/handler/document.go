@@ -23,12 +23,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"ragflow/internal/common"
 	"ragflow/internal/entity"
 	"ragflow/internal/permission"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/utility"
 	"reflect"
 	"strconv"
@@ -71,10 +73,11 @@ type documentServiceIface interface {
 	GetDocumentMetadataByID(ctx context.Context, docID string) (map[string]interface{}, error)
 	GetDocumentArtifact(ctx context.Context, filename string) (*document.ArtifactResponse, error)
 	GetDocumentPreview(ctx context.Context, docID string) (*document.DocumentPreview, error)
-	UploadLocalDocuments(ctx context.Context, kb *entity.Knowledgebase, files []*multipart.FileHeader, parentPath string, parserConfigOverride map[string]interface{}) ([]map[string]interface{}, []string)
-	UploadWebDocument(ctx context.Context, kb *entity.Knowledgebase, name, url string) (map[string]interface{}, common.ErrorCode, error)
-	UploadEmptyDocument(ctx context.Context, kb *entity.Knowledgebase, name string) (map[string]interface{}, common.ErrorCode, error)
+	UploadLocalDocuments(ctx context.Context, kb *entity.Knowledgebase, files []*multipart.FileHeader, parentPath string, parserConfigOverride map[string]interface{}, securityConfig []byte) ([]map[string]interface{}, []string)
+	UploadWebDocument(ctx context.Context, kb *entity.Knowledgebase, name, url string, securityConfig []byte) (map[string]interface{}, common.ErrorCode, error)
+	UploadEmptyDocument(ctx context.Context, kb *entity.Knowledgebase, name string, securityConfig []byte) (map[string]interface{}, common.ErrorCode, error)
 	DownloadDocument(ctx context.Context, datasetID, docID string) (*document.DownloadDocumentResp, error)
+	OpenOriginal(ctx context.Context, datasetID, documentID string) (*sensitive.Original, error)
 	UpdateDatasetDocument(ctx context.Context, datasetID, documentID string, req *document.UpdateDatasetDocumentRequest, present map[string]bool) (*document.UpdateDatasetDocumentResponse, common.ErrorCode, error)
 	ApplyDatasetParserConfig(ctx context.Context, datasetID string) (*document.ApplyDatasetParserConfigResponse, common.ErrorCode, error)
 	BatchUpdateDocumentMetadatas(ctx context.Context, datasetID string, selector *document.MetadataSelector, updates []document.MetadataUpdate, deletes []document.MetadataDelete) (*document.BatchUpdateMetadatasResponse, common.ErrorCode, error)
@@ -1011,14 +1014,46 @@ func (h *DocumentHandler) UploadDocuments(c *gin.Context) {
 
 	switch uploadType {
 	case "web":
+		if !validateMultipartImportType(c) {
+			return
+		}
 		h.uploadWebDocument(c, kb)
 	case "empty":
 		h.uploadEmptyDocument(c, kb)
 	case "local":
+		if !validateMultipartImportType(c) {
+			return
+		}
 		h.uploadLocalDocuments(c, kb)
 	default:
 		common.RespondError(c, common.CodeArgumentError, `"type" must be one of "local", "web", or "empty".`)
 	}
+}
+
+// Import type is a business operation, not a filename extension. This endpoint
+// implements normal document ingestion; it must not silently execute a
+// structured-import request as normal ingestion.
+func validateDocumentImportType(importType string, hasSecurityConfig bool) error {
+	switch strings.ToLower(strings.TrimSpace(importType)) {
+	case "", "normal":
+		return nil
+	case "structured":
+		if hasSecurityConfig {
+			return errors.New("SECURITY_PROCESSING_UNSUPPORTED_FOR_IMPORT_TYPE")
+		}
+		return errors.New("STRUCTURED_IMPORT_UNSUPPORTED")
+	default:
+		return errors.New("INVALID_IMPORT_TYPE")
+	}
+}
+
+func validateMultipartImportType(c *gin.Context) bool {
+	_, configured := c.GetPostForm("security_config")
+	if err := validateDocumentImportType(c.PostForm("import_type"), configured); err != nil {
+		common.RespondError(c, common.CodeArgumentError, err.Error())
+		return false
+	}
+	return true
 }
 
 func (h *DocumentHandler) uploadLocalDocuments(c *gin.Context, kb *entity.Knowledgebase) {
@@ -1072,7 +1107,7 @@ func (h *DocumentHandler) uploadLocalDocuments(c *gin.Context, kb *entity.Knowle
 		}
 	}
 	ctx := c.Request.Context()
-	data, errMsgs := h.documentService.UploadLocalDocuments(ctx, kb, files, c.PostForm("parent_path"), override)
+	data, errMsgs := h.documentService.UploadLocalDocuments(ctx, kb, files, c.PostForm("parent_path"), override, []byte(c.PostForm("security_config")))
 	if len(errMsgs) > 0 {
 		common.RespondError(c, common.CodeServerError, strings.Join(errMsgs, "\n"))
 		return
@@ -1095,13 +1130,19 @@ func (h *DocumentHandler) uploadLocalDocuments(c *gin.Context, kb *entity.Knowle
 
 func (h *DocumentHandler) uploadEmptyDocument(c *gin.Context, kb *entity.Knowledgebase) {
 	var req struct {
-		Name string `json:"name"`
+		Name           string          `json:"name"`
+		ImportType     string          `json:"import_type"`
+		SecurityConfig json.RawMessage `json:"security_config"`
 	}
 	// An empty body is valid (falls through to the name-required check below);
 	// a non-empty but malformed body should report the syntax error, not a
 	// misleading "File name can't be empty."
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 		common.RespondError(c, common.CodeArgumentError, "Invalid JSON body: "+err.Error())
+		return
+	}
+	if err := validateDocumentImportType(req.ImportType, len(req.SecurityConfig) != 0); err != nil {
+		common.RespondError(c, common.CodeArgumentError, err.Error())
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -1114,7 +1155,7 @@ func (h *DocumentHandler) uploadEmptyDocument(c *gin.Context, kb *entity.Knowled
 		return
 	}
 	ctx := c.Request.Context()
-	data, code, err := h.documentService.UploadEmptyDocument(ctx, kb, name)
+	data, code, err := h.documentService.UploadEmptyDocument(ctx, kb, name, req.SecurityConfig)
 	if err != nil {
 		common.RespondError(c, code, err.Error())
 		return
@@ -1142,7 +1183,7 @@ func (h *DocumentHandler) uploadWebDocument(c *gin.Context, kb *entity.Knowledge
 		return
 	}
 	ctx := c.Request.Context()
-	data, code, err := h.documentService.UploadWebDocument(ctx, kb, name, rawURL)
+	data, code, err := h.documentService.UploadWebDocument(ctx, kb, name, rawURL, []byte(c.PostForm("security_config")))
 	if err != nil {
 		common.RespondError(c, code, err.Error())
 		return
@@ -1166,7 +1207,7 @@ func mapDocKeysWithRunStatus(raw map[string]interface{}) map[string]interface{} 
 		"parser_id":        raw["parser_id"],
 		"ingestion_status": ingestionStatus,
 	}
-	for _, k := range []string{"id", "name", "type", "size", "suffix", "source_type", "created_by", "parser_config", "location", "pipeline_id", "content_hash"} {
+	for _, k := range []string{"id", "name", "type", "size", "suffix", "source_type", "created_by", "parser_config", "location", "pipeline_id", "content_hash", "security_processing_enabled", "security_processed", "sensitive_replacement_count", "security_failure_reason"} {
 		if v, ok := raw[k]; ok {
 			out[k] = v
 		}
@@ -1254,36 +1295,40 @@ func mapDocumentListItem(doc *entity.DocumentListItem, metaFields map[string]int
 		ingestionStatus = *doc.IngestionStatus
 	}
 	item := map[string]interface{}{
-		"id":                     doc.ID,
-		"dataset_id":             doc.KbID,
-		"name":                   stringValue(doc.Name),
-		"thumbnail":              stringValue(doc.Thumbnail),
-		"size":                   doc.Size,
-		"type":                   doc.Type,
-		"created_by":             doc.CreatedBy,
-		"location":               stringValue(doc.Location),
-		"token_count":            doc.TokenNum,
-		"chunk_count":            doc.ChunkNum,
-		"progress":               doc.Progress,
-		"progress_msg":           stringValue(doc.ProgressMsg),
-		"latest_ingestion_event": latestEvent,
-		"process_begin_at":       formatTimePtr(doc.ProcessBeginAt),
-		"process_duration":       processDuration,
-		"suffix":                 doc.Suffix,
-		"ingestion_status":       ingestionStatus,
-		"status":                 stringValue(doc.Status),
-		"parser_id":              doc.ParserID,
-		"chunk_method":           doc.ParserID,
-		"pipeline_id":            stringValue(doc.PipelineID),
-		"pipeline_version_id":    stringValue(doc.PipelineVersionID),
-		"pipeline_name":          stringValue(doc.PipelineName),
-		"nickname":               stringValue(doc.Nickname),
-		"parser_config":          decodeJSONMap(string(doc.ParserConfig)),
-		"meta_fields":            metaFields,
-		"create_time":            int64(0),
-		"create_date":            "",
-		"update_time":            int64(0),
-		"update_date":            "",
+		"id":                          doc.ID,
+		"dataset_id":                  doc.KbID,
+		"security_processing_enabled": doc.SecurityProcessingEnabled,
+		"security_processed":          doc.SecurityProcessed,
+		"sensitive_replacement_count": doc.SensitiveReplacementCount,
+		"security_failure_reason":     doc.SecurityFailureReason,
+		"name":                        stringValue(doc.Name),
+		"thumbnail":                   stringValue(doc.Thumbnail),
+		"size":                        doc.Size,
+		"type":                        doc.Type,
+		"created_by":                  doc.CreatedBy,
+		"location":                    stringValue(doc.Location),
+		"token_count":                 doc.TokenNum,
+		"chunk_count":                 doc.ChunkNum,
+		"progress":                    doc.Progress,
+		"progress_msg":                stringValue(doc.ProgressMsg),
+		"latest_ingestion_event":      latestEvent,
+		"process_begin_at":            formatTimePtr(doc.ProcessBeginAt),
+		"process_duration":            processDuration,
+		"suffix":                      doc.Suffix,
+		"ingestion_status":            ingestionStatus,
+		"status":                      stringValue(doc.Status),
+		"parser_id":                   doc.ParserID,
+		"chunk_method":                doc.ParserID,
+		"pipeline_id":                 stringValue(doc.PipelineID),
+		"pipeline_version_id":         stringValue(doc.PipelineVersionID),
+		"pipeline_name":               stringValue(doc.PipelineName),
+		"nickname":                    stringValue(doc.Nickname),
+		"parser_config":               decodeJSONMap(string(doc.ParserConfig)),
+		"meta_fields":                 metaFields,
+		"create_time":                 int64(0),
+		"create_date":                 "",
+		"update_time":                 int64(0),
+		"update_date":                 "",
 	}
 
 	if doc.CreateTime != nil {
@@ -1973,4 +2018,20 @@ func pythonJSONKindName(typeErr *json.UnmarshalTypeError) string {
 		return "dictionary"
 	}
 	return "value"
+}
+
+// DownloadOriginal is deliberately restricted to API-token clients.
+func (h *DocumentHandler) DownloadOriginal(c *gin.Context) {
+	if !c.GetBool("auth_via_api_token") {
+		common.RespondError(c, common.CodePermissionError, "SP_ORIGINAL_ACCESS_DENIED")
+		return
+	}
+	original, err := h.documentService.OpenOriginal(c.Request.Context(), c.Param("dataset_id"), c.Param("document_id"))
+	if err != nil {
+		common.RespondError(c, common.CodeDataError, err.Error())
+		return
+	}
+	defer original.Body.Close()
+	name := strings.NewReplacer("\r", "", "\n", "").Replace(original.Name)
+	c.DataFromReader(http.StatusOK, original.Size, "application/octet-stream", original.Body, map[string]string{"Cache-Control": "no-store", "Content-Disposition": mime.FormatMediaType("attachment", map[string]string{"filename": name})})
 }

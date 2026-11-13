@@ -1242,7 +1242,7 @@ func (s *RetrievalService) PruneDeletedChunks(ctx context.Context, result *Retri
 	chunkDocIDs := make([]string, 0, len(result.IDs))
 	for _, chunkID := range result.IDs {
 		chunk := result.Field[chunkID]
-		if len(chunk) == 0 || isDatasetCompilationChunk(chunk) {
+		if len(chunk) == 0 || common.IsDatasetCompilationChunk(chunk) {
 			continue
 		}
 		if docID := strings.TrimSpace(firstStringValue(chunk["doc_id"])); docID != "" {
@@ -1268,6 +1268,9 @@ func (s *RetrievalService) PruneDeletedChunks(ctx context.Context, result *Retri
 
 	existingDocIDs := make(map[string]struct{}, len(docs))
 	for _, doc := range docs {
+		if !doc.SecurityReadable() {
+			continue
+		}
 		existingDocIDs[doc.ID] = struct{}{}
 	}
 
@@ -1283,7 +1286,7 @@ func (s *RetrievalService) PruneDeletedChunks(ctx context.Context, result *Retri
 			removed++
 			continue
 		}
-		if !isDatasetCompilationChunk(chunk) {
+		if !common.IsDatasetCompilationChunk(chunk) {
 			docID := strings.TrimSpace(firstStringValue(chunk["doc_id"]))
 			if _, docExists := existingDocIDs[docID]; docID == "" || !docExists {
 				removed++
@@ -1332,13 +1335,6 @@ func (s *RetrievalService) PruneDeletedChunks(ctx context.Context, result *Retri
 		Options:     result.Options,
 		IndexNames:  result.IndexNames,
 	}, nil
-}
-
-func isDatasetCompilationChunk(chunk map[string]interface{}) bool {
-	docID, _ := chunk["doc_id"].(string)
-	kbID, _ := chunk["kb_id"].(string)
-	compileKind, _ := chunk["compile_kwd"].(string)
-	return chunk["scope_kwd"] == "dataset" && compileKind != "" && docID != "" && docID == kbID
 }
 
 // buildIndexNames creates one index name per distinct tenant ID.

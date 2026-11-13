@@ -211,7 +211,7 @@ func TestDatasetRenameFolderSurvivesDeletingReusedName(t *testing.T) {
 			}
 			create := func(name string) *entity.Knowledgebase {
 				t.Helper()
-				result, code, err := datasets.CreateDataset(ctx, &service.CreateDatasetRequest{Name: name, ParserID: sptr("general"), ParseType: iptr(1)})
+				result, code, err := datasets.CreateDataset(ctx, &service.CreateDatasetRequest{SecurityConfig: []byte(`{"default_enabled":false}`), Name: name, ParserID: sptr("general"), ParseType: iptr(1)})
 				if err != nil || code != common.CodeSuccess {
 					t.Fatalf("create %s: code=%v err=%v", name, code, err)
 				}
@@ -241,7 +241,7 @@ func TestDatasetRenameFolderSurvivesDeletingReusedName(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = req.MultipartForm.RemoveAll() })
-				results, errs := documents.UploadLocalDocuments(ctx, kb, req.MultipartForm.File["file"], "", nil)
+				results, errs := documents.UploadLocalDocuments(ctx, kb, req.MultipartForm.File["file"], "", nil, nil)
 				if len(errs) != 0 || len(results) != 1 {
 					t.Fatalf("upload %s: results=%v errors=%v", name, results, errs)
 				}

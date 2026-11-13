@@ -112,7 +112,7 @@ func (p *EPUBParser) ParseWithResult(ctx context.Context, filename string, data 
 			"size":     len(data),
 			"encoding": detectedEnc,
 		},
-		JSON:     MapsToItems(items),
+		JSON:     sensitiveBlockItems(ctx, items),
 		Warnings: warnings,
 	}
 }

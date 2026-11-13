@@ -200,7 +200,7 @@ func (p *MarkdownParser) parseWithState(ctx context.Context, filename string, da
 		File: map[string]any{
 			"name": filename,
 		},
-		JSON:     MapsToItems(items),
+		JSON:     sensitiveBlockItems(ctx, items),
 		Warnings: warnings,
 	}
 }

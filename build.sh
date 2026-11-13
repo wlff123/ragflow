@@ -1016,6 +1016,26 @@ setup_cgo_env() {
 
 # Run Go unit tests with the same CGO env as `build_go`. Any extra args are
 # forwarded to `go test`, e.g. `./build.sh --test -run TestFoo ./internal/admin/...`.
+# Pure Go packages can be verified without downloading parser native archives.
+# Reject non-standard CGO dependencies so this cannot silently replace native
+# package validation. net/os/user may use their standard pure-Go fallbacks.
+run_go_pure_tests() {
+    print_section "Running pure Go package tests"
+    cd "$PROJECT_ROOT"
+    if [ "$#" -eq 0 ]; then
+        echo "Error: --test-pure requires explicit package paths" >&2
+        return 1
+    fi
+    local cgo_packages
+    cgo_packages=$(CGO_ENABLED=1 go list -deps -test -f '{{if not .Standard}}{{if .CgoFiles}}{{.ImportPath}}{{end}}{{end}}' "$@") || return 1
+    if [ -n "$cgo_packages" ]; then
+        echo "Error: use --test for packages with native dependencies:" >&2
+        echo "$cgo_packages" >&2
+        return 1
+    fi
+    CGO_ENABLED=0 go test -count=1 "$@"
+}
+
 run_go_tests() {
     print_section "Running Go tests"
 
@@ -1232,6 +1252,7 @@ EXAMPLES:
     $0 --cpp-test   # Build C++ test executable
     $0 --test       # Run all Go tests (unit tier, no build tag)
     $0 --test -run TestFoo ./internal/admin/...      # Targeted Go tests
+    $0 --test-pure ./internal/sensitive/...          # Pure Go packages, no native parser libraries
     $0 --test-integration ./internal/engine/...      # integration + native tiers
     $0 --test-integration-go ./internal/storage/...  # generic integration tier only
     $0 --test-e2e                                 # e2e tier
@@ -1284,6 +1305,10 @@ main() {
             else
                 run_go_tests "${args[@]:1}"
             fi
+            ;;
+        --test-pure)
+            check_go_deps
+            run_go_pure_tests "${args[@]:1}"
             ;;
         --test-integration)
             check_go_deps

@@ -33,6 +33,7 @@ import (
 	"ragflow/internal/entity/models"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 	"strings"
 	"sync"
@@ -583,6 +584,9 @@ func (s *ChunkService) Get(ctx context.Context, req *service.GetChunkRequest) (*
 		return nil, fmt.Errorf("document does not belong to this dataset")
 	}
 
+	if !doc.SecurityReadable() {
+		return nil, sensitive.Failure("SP_NOT_PROCESSED")
+	}
 	// The lookup stays inside the dataset named in the route, and the row must
 	// resolve to the document named in the route: a chunk id alone is not
 	// authority to read another dataset's (or another document's) chunk.
@@ -827,6 +831,9 @@ func (s *ChunkService) List(ctx context.Context, req *service.ListChunksRequest)
 	if req.DatasetID != "" && doc.KbID != req.DatasetID {
 		return nil, fmt.Errorf("document not found")
 	}
+	if !doc.SecurityReadable() {
+		return nil, sensitive.Failure("SP_NOT_PROCESSED")
+	}
 
 	kb, err := s.getAccessibleKnowledgebase(ctx, doc.KbID, permission.OperationRead)
 	if err != nil {
@@ -1015,32 +1022,36 @@ func (s *ChunkService) List(ctx context.Context, req *service.ListChunksRequest)
 	// chunk_num→chunk_count.
 	timeFormat := "2006-01-02T15:04:05"
 	docInfo := map[string]interface{}{
-		"id":               doc.ID,
-		"thumbnail":        doc.Thumbnail,
-		"dataset_id":       doc.KbID,
-		"chunk_method":     doc.ParserID,
-		"pipeline_id":      doc.PipelineID,
-		"parser_config":    doc.ParserConfig,
-		"source_type":      doc.SourceType,
-		"type":             doc.Type,
-		"created_by":       doc.CreatedBy,
-		"name":             doc.Name,
-		"location":         doc.Location,
-		"size":             doc.Size,
-		"token_count":      doc.TokenNum,
-		"chunk_count":      doc.ChunkNum,
-		"progress":         utility.JSONFloat64(doc.Progress),
-		"progress_msg":     doc.ProgressMsg,
-		"process_begin_at": utility.FormatTimeToString(doc.ProcessBeginAt, timeFormat),
-		"process_duration": doc.ProcessDuration,
-		"content_hash":     doc.ContentHash,
-		"suffix":           doc.Suffix,
-		"ingestion_status": ingestionStatus,
-		"status":           doc.Status,
-		"create_time":      doc.CreateTime,
-		"create_date":      utility.FormatTimeToString(doc.CreateDate, timeFormat),
-		"update_time":      doc.UpdateTime,
-		"update_date":      utility.FormatTimeToString(doc.UpdateDate, timeFormat),
+		"security_processing_enabled": doc.SecurityProcessingEnabled,
+		"security_processed":          doc.SecurityProcessed,
+		"sensitive_replacement_count": doc.SensitiveReplacementCount,
+		"security_failure_reason":     doc.SecurityFailureReason,
+		"id":                          doc.ID,
+		"thumbnail":                   doc.Thumbnail,
+		"dataset_id":                  doc.KbID,
+		"chunk_method":                doc.ParserID,
+		"pipeline_id":                 doc.PipelineID,
+		"parser_config":               doc.ParserConfig,
+		"source_type":                 doc.SourceType,
+		"type":                        doc.Type,
+		"created_by":                  doc.CreatedBy,
+		"name":                        doc.Name,
+		"location":                    doc.Location,
+		"size":                        doc.Size,
+		"token_count":                 doc.TokenNum,
+		"chunk_count":                 doc.ChunkNum,
+		"progress":                    utility.JSONFloat64(doc.Progress),
+		"progress_msg":                doc.ProgressMsg,
+		"process_begin_at":            utility.FormatTimeToString(doc.ProcessBeginAt, timeFormat),
+		"process_duration":            doc.ProcessDuration,
+		"content_hash":                doc.ContentHash,
+		"suffix":                      doc.Suffix,
+		"ingestion_status":            ingestionStatus,
+		"status":                      doc.Status,
+		"create_time":                 doc.CreateTime,
+		"create_date":                 utility.FormatTimeToString(doc.CreateDate, timeFormat),
+		"update_time":                 doc.UpdateTime,
+		"update_date":                 utility.FormatTimeToString(doc.UpdateDate, timeFormat),
 	}
 
 	return &service.ListChunksResponse{
@@ -1121,6 +1132,9 @@ func (s *ChunkService) UpdateChunk(ctx context.Context, req *service.UpdateChunk
 	if doc.KbID != req.DatasetID {
 		return fmt.Errorf("document does not belong to this dataset")
 	}
+	if doc.SecurityProcessingEnabled && (req.ImageBase64 != nil || (req.ImageUpdateMode != nil && *req.ImageUpdateMode != imageUpdateModeRemove)) {
+		return sensitive.Failure("SP_STRUCTURE_INVALID")
+	}
 
 	// Fetch existing chunk first
 	indexName := fmt.Sprintf("ragflow_%s", targetTenantID)
@@ -1153,11 +1167,6 @@ func (s *ChunkService) UpdateChunk(ctx context.Context, req *service.UpdateChunk
 			d["content_with_weight"] = ""
 		}
 	}
-
-	// Tokenize content
-	contentStr := d["content_with_weight"].(string)
-	d["content_ltks"], _ = s.tokenize(contentStr, language)
-	d["content_sm_ltks"], _ = s.fineGrainedTokenize(d["content_ltks"].(string), language)
 
 	// Important keywords - convert []string to []interface{} for transformChunkFields
 	if req.ImportantKwd != nil {
@@ -1208,6 +1217,52 @@ func (s *ChunkService) UpdateChunk(ctx context.Context, req *service.UpdateChunk
 		d["tag_feas"] = tagFeas
 	}
 
+	var security *manualSecurity
+	if doc.SecurityProcessingEnabled {
+		fields := map[string]any{"content_with_weight": d["content_with_weight"]}
+		for _, key := range []string{"docnm_kwd", "important_kwd", "question_kwd", "tag_kwd", "tag_feas"} {
+			if value, ok := existing[key]; ok {
+				fields[key] = value
+			}
+			if value, ok := d[key]; ok {
+				fields[key] = value
+			}
+		}
+		var cleaned map[string]any
+		cleaned, security, err = s.prepareSensitiveChunk(ctx, doc, kb, req.ChunkID, fields)
+		if err != nil {
+			return err
+		}
+		for key, value := range cleaned {
+			d[key] = value
+		}
+		if req.Content != nil || req.Questions != nil {
+			name, _ := d["docnm_kwd"].(string)
+			vector, err := s.embedManualChunk(ctx, kb, name, d["content_with_weight"].(string), d["question_kwd"])
+			if err != nil {
+				return err
+			}
+			d[fmt.Sprintf("q_%d_vec", len(vector))] = vector
+		}
+		for _, pair := range [][2]string{{"important_kwd", "important_tks"}, {"question_kwd", "question_tks"}} {
+			if value, ok := d[pair[0]]; ok {
+				d[pair[1]], err = s.tokenize(strings.Join(utility.ConvertToStringSlice(value), "\n"), language)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	contentStr := d["content_with_weight"].(string)
+	d["content_ltks"], err = s.tokenize(contentStr, language)
+	if err != nil && security != nil {
+		return err
+	}
+	d["content_sm_ltks"], err = s.fineGrainedTokenize(d["content_ltks"].(string), language)
+	if err != nil && security != nil {
+		return err
+	}
+
 	// Image (Python: chunk_api.update_chunk). The image is stored before the
 	// index update and dropped from storage only after it, so a failed update
 	// never leaves the index pointing at a deleted image.
@@ -1250,9 +1305,15 @@ func (s *ChunkService) UpdateChunk(ctx context.Context, req *service.UpdateChunk
 		"doc_id": req.DocumentID,
 	}
 
+	if err = security.begin(ctx, d); err != nil {
+		return err
+	}
 	err = s.docEngine.UpdateChunks(ctx, condition, d, indexName, req.DatasetID)
 	if err != nil {
 		return fmt.Errorf("failed to update chunk: %w", err)
+	}
+	if err = security.finish(ctx); err != nil {
+		return err
 	}
 	// The index update above already committed, so a failing image removal must
 	// not skip the Wiki refresh for a content/availability change in the same
@@ -1403,6 +1464,9 @@ func (s *ChunkService) AddChunk(ctx context.Context, req *service.AddChunkReques
 	if err != nil || doc == nil {
 		return nil, addChunkError{code: common.CodeDataError, message: fmt.Sprintf("you don't own the document %s", req.DocumentID)}
 	}
+	if doc.SecurityProcessingEnabled && req.ImageBase64 != nil {
+		return nil, sensitive.Failure("SP_STRUCTURE_INVALID")
+	}
 
 	content := strings.TrimSpace(req.Content)
 	if content == "" {
@@ -1414,6 +1478,27 @@ func (s *ChunkService) AddChunk(ctx context.Context, req *service.AddChunkReques
 		tagFeas, err = validateTagFeatures(req.TagFeas)
 		if err != nil {
 			return nil, addChunkError{code: common.CodeDataError, message: "`tag_feas` " + err.Error()}
+		}
+	}
+	fields, security, err := s.prepareSensitiveChunk(ctx, doc, kb, "", map[string]any{
+		"content_with_weight": req.Content, "important_kwd": req.ImportantKeywords,
+		"question_kwd": req.Questions, "tag_kwd": req.TagKwd, "tag_feas": tagFeas,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if security != nil {
+		copyReq := *req
+		req = &copyReq
+		req.Content = fields["content_with_weight"].(string)
+		req.ImportantKeywords = utility.ConvertToStringSlice(fields["important_kwd"])
+		req.Questions = utility.ConvertToStringSlice(fields["question_kwd"])
+		req.TagKwd = utility.ConvertToStringSlice(fields["tag_kwd"])
+		if fields["tag_feas"] != nil {
+			tagFeas, err = validateTagFeatures(fields["tag_feas"])
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1505,33 +1590,29 @@ func (s *ChunkService) AddChunk(ctx context.Context, req *service.AddChunkReques
 		chunkData["doc_type_kwd"] = "image"
 	}
 
-	embeddingModel, err := s.getEmbeddingModel(ctx, kb.TenantID, kb.EmbdID)
-	if err != nil {
-		return nil, addChunkError{code: common.CodeServerError, message: fmt.Sprintf("get embedding model: %v", err)}
+	// Check the assembled fields, including the stored document name, before
+	// sending business text to the embedding model.
+	if security != nil {
+		if err = security.processor.Engine.ScanChunks(ctx, []map[string]any{chunkData}); err != nil {
+			return nil, err
+		}
 	}
-	embeddingText := req.Content
-	if len(questionKwd) > 0 {
-		embeddingText = strings.Join(questionKwd, "\n")
-	}
-	// Embed inside the model's window: Content arrives from the API and can be
-	// arbitrarily long, and the provider answers 400/20015 instead of truncating it.
-	embeddings, err := embeddingModel.Embed(ctx, models.EmbedRequest{Texts: []string{docName, embeddingText}}, &models.EmbeddingConfig{Dimension: 0}, nil)
+	mergedVec, err := s.embedManualChunk(ctx, kb, docName, req.Content, questionKwd)
 	if err != nil {
 		return nil, addChunkError{code: common.CodeServerError, message: fmt.Sprintf("encode chunk embedding: %v", err)}
-	}
-	if len(embeddings) != 2 {
-		return nil, addChunkError{code: common.CodeServerError, message: fmt.Sprintf("unexpected embedding count: %d", len(embeddings))}
-	}
-	mergedVec, err := mergeChunkEmbeddings(embeddings[0].Embedding, embeddings[1].Embedding)
-	if err != nil {
-		return nil, addChunkError{code: common.CodeServerError, message: err.Error()}
 	}
 	chunkData[fmt.Sprintf("q_%d_vec", len(mergedVec))] = mergedVec
 
 	ctx, cancel := context.WithTimeout(ctx, 600*time.Second)
 	defer cancel()
+	if err = security.begin(ctx, chunkData); err != nil {
+		return nil, err
+	}
 	if _, err = s.docEngine.InsertChunks(ctx, []map[string]interface{}{chunkData}, indexName, req.DatasetID, datasetLanguageOf(kb)); err != nil {
 		return nil, addChunkError{code: common.CodeServerError, message: fmt.Sprintf("insert chunk: %v", err)}
+	}
+	if err = security.finish(ctx); err != nil {
+		return nil, err
 	}
 
 	tokenNum := int64(s.numTokens(req.Content))

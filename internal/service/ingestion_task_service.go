@@ -786,6 +786,13 @@ func (s *IngestionTaskService) CreateAndEnqueue(ctx context.Context, task *entit
 // knowledge-base cache for batch callers (CreateForDocuments resolves one kb
 // for the whole batch). A nil cache behaves exactly like CreateAndEnqueue.
 func (s *IngestionTaskService) createAndEnqueueWithKBCache(ctx context.Context, task *entity.IngestionTask, kbCache map[string]*entity.Knowledgebase) (*entity.IngestionTask, error) {
+	doc, err := s.documentDAO.GetByID(ctx, dao.DB, task.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateSensitiveDocument(ctx, doc); err != nil {
+		return nil, err
+	}
 	existing, err := s.ingestionTaskDAO.GetByDocumentID(ctx, dao.DB, task.DocumentID)
 	if err != nil {
 		return nil, err
@@ -1029,6 +1036,9 @@ func (s *IngestionTaskService) ensureRunIdentity(ctx context.Context, task *enti
 			return err
 		}
 		if err := s.ingestionTaskDAO.UpdatePipelineLogID(ctx, tx, lockedTask.ID, log.ID); err != nil {
+			return err
+		}
+		if err := s.documentDAO.BeginSecurityRun(ctx, tx, lockedDocument, log.ID); err != nil {
 			return err
 		}
 		boundLogID = log.ID
@@ -1290,7 +1300,8 @@ func (s *IngestionTaskService) insertEventOnDB(ctx context.Context, db *gorm.DB,
 		component = ""
 		phase = 0
 	}
-	message = s.truncateIngestionEventMessage(message)
+	component = common.CleanLogText(component)
+	message = s.truncateIngestionEventMessage(common.CleanLogText(message))
 	now := time.Now().Local()
 	// EventTypeLifecycle is zero while the database default is the defensive
 	// legacy value. A map keeps the explicitly mapped protocol value intact;

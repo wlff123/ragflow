@@ -26,6 +26,7 @@ package canvas
 import (
 	"context"
 	"errors"
+	"ragflow/internal/common"
 	"strconv"
 	"time"
 
@@ -209,7 +210,7 @@ func (t *RunTracker) MarkFailed(ctx context.Context, runID, reason string) error
 	return t.setRunFields(ctx, runID,
 		"status", runStatusFailed,
 		"finished_at", time.Now().UnixMilli(),
-		"failure_reason", reason,
+		"failure_reason", common.CleanLogText(reason),
 	)
 }
 

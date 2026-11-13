@@ -55,10 +55,13 @@ func TestNormalizeWebDocumentName(t *testing.T) {
 	}{
 		{"pdf detected by blob", "report", "application/octet-stream", pdfBlob, "report.pdf", true},
 		{"html detected by blob", "page", "application/octet-stream", htmlBlob, "page.html", true},
-		{"dot stripped by utility, no type hint", "image.png", "application/octet-stream", []byte("plain"), "imagepng", true},
+		{"preserve extension", "image.png", "application/octet-stream", []byte("plain"), "image.png", true},
+		{"text extension", "public-web.txt", "text/plain", []byte("plain"), "public-web.txt", true},
+		{"discard directories", "../目录/维护.txt", "text/plain", []byte("plain"), "维护.txt", true},
+		{"empty name", "", "text/plain", nil, "", false},
 		{"no hint, no extension", "doc", "application/json", []byte("{}"), "doc", true},
-		{"cjk-only name with pdf content", "界界", "application/pdf", pdfBlob, "", false},
-		{"cjk-only name without type hint", "界界", "application/json", []byte("{}"), "", false},
+		{"cjk-only name with pdf content", "界界", "application/pdf", pdfBlob, "界界.pdf", true},
+		{"cjk-only name without type hint", "界界", "application/json", []byte("{}"), "界界", true},
 	}
 	for _, c := range cases {
 		got, ok := normalizeWebDocumentName(c.filename, c.ct, c.blob)

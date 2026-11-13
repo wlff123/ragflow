@@ -36,6 +36,17 @@ mysql:
   max_connections: 900
   stale_timeout: 300
   max_allowed_packet: 1073741824
+# Dedicated private originals bucket; do not point this at a business bucket.
+# For production KS3/S3, pre-create the bucket and set create_bucket: false.
+sensitive_processing:
+  rules_path: conf/sensitive_rules.yaml
+  original_storage:
+    endpoint: 'http://localhost:9000'
+    region: 'us-east-1'
+    bucket: 'ragflow-sensitive-originals'
+    access_key: 'rag_flow'
+    secret_key: 'infini_rag_flow'
+    create_bucket: true
 minio:
   user: 'rag_flow'
   password: 'infini_rag_flow'

@@ -136,7 +136,7 @@ func (p *HTMLParser) ParseWithResult(ctx context.Context, filename string, data 
 			"name":     filename,
 			"encoding": encName,
 		},
-		JSON:     MapsToItems(items),
+		JSON:     sensitiveBlockItems(ctx, items),
 		Warnings: warnings,
 	}
 }

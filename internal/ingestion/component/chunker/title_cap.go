@@ -76,7 +76,7 @@ func titleSentenceSplit(text string) []string {
 	if text == "" {
 		return nil
 	}
-	idxs := sentenceBoundaryRe.FindAllStringIndex(text, -1)
+	idxs := delimiterMatches(text, sentenceBoundaryRe)
 	var out []string
 	prev := 0
 	for _, idx := range idxs {
@@ -141,6 +141,7 @@ func hardSplitByTokens(text string, cap int) []string {
 				break
 			}
 		}
+		head = rest[:placeholderCut(rest, len(head), false)]
 		out = append(out, head)
 		rest = rest[len(head):]
 	}

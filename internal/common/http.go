@@ -429,6 +429,9 @@ func isSensitiveLogKey(key string) bool {
 }
 
 func logProviderCall(providerURL, payload string, statusCode int, responseBody string, took, firstToken time.Duration, err error) {
+	// Clean complete JSON bodies before formatting them into a message; otherwise
+	// quoting/escaping can hide credential keys from the text matcher.
+	payload, responseBody = CleanLogText(payload), CleanLogText(responseBody)
 	request := fmt.Sprintf("url=%s payload=%s", providerURL, payload)
 	response := fmt.Sprintf("response_code=%d took=%s first-token=%s response_body=%s", statusCode, took, firstToken, responseBody)
 	if err != nil {

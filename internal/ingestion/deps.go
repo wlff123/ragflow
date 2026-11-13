@@ -29,6 +29,7 @@ import (
 
 	"ragflow/internal/engine"
 	kvrocks "ragflow/internal/engine/kvrocks"
+	"ragflow/internal/sensitive"
 
 	"gorm.io/gorm"
 )
@@ -41,6 +42,7 @@ import (
 // ingestion uses KV to hand decoded images to downstream components, so
 // Validate reports a missing client at startup.
 type Deps struct {
+	Sensitive *sensitive.Processor
 	// Engine persists and searches chunks (document index, memory messages,
 	// compiled knowledge products).
 	Engine engine.DocEngine

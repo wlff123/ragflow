@@ -241,6 +241,7 @@ func InitLogger(level string, file FileOutput, serviceName string) error {
 		)
 	}
 
+	core = newCleaningCore(core, encoderConfig)
 	if serviceName != "" {
 		Logger = zap.New(core,
 			zap.Fields(zap.Int("pid", os.Getpid())),
@@ -253,6 +254,7 @@ func InitLogger(level string, file FileOutput, serviceName string) error {
 		)
 	}
 	Sugar = Logger.Sugar()
+	log.SetOutput(stdLogRouter{})
 
 	return nil
 }

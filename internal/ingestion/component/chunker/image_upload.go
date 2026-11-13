@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"ragflow/internal/sensitive"
 	"strconv"
 	"strings"
 
@@ -71,6 +72,12 @@ func imageUploadConcurrency() int {
 // The caller (imageUploadDecorator) must write ck["id"] before calling this
 // function.
 func uploadChunkMedia(ctx context.Context, chunks []map[string]any, up component.ImageUploader, kbID, docID string) ([]map[string]any, error) {
+	if sensitive.FromContext(ctx) != nil {
+		for _, ck := range chunks {
+			dropSensitiveMedia(ck)
+		}
+		return chunks, nil
+	}
 	for _, ck := range chunks {
 		imgID, _ := ck["img_id"].(string)
 		if imgID != "" {
@@ -116,6 +123,10 @@ func uploadChunkMedia(ctx context.Context, chunks []map[string]any, up component
 // uploadChunkImage handles a single chunk map: reads ck["id"] (required),
 // decodes and uploads the image, then writes img_id and removes the raw image.
 func uploadChunkImage(ctx context.Context, ck map[string]any, up component.ImageUploader, kbID string) error {
+	if sensitive.FromContext(ctx) != nil {
+		dropSensitiveMedia(ck)
+		return nil
+	}
 	if ck == nil {
 		return nil
 	}
@@ -150,6 +161,9 @@ func uploadChunkImage(ctx context.Context, ck map[string]any, up component.Image
 // is responsible for decoding the bytes, writing img_id/id, and dropping the
 // raw image field. The process-wide semaphore bounds concurrent uploads.
 func uploadOneImage(ctx context.Context, up component.ImageUploader, kbID, chunkID string, data []byte) (string, error) {
+	if sensitive.FromContext(ctx) != nil {
+		return "", nil
+	}
 	select {
 	case imageUploadSem <- struct{}{}:
 		defer func() { <-imageUploadSem }()
@@ -179,4 +193,13 @@ func resolveImageUploadContext(ctx context.Context, inputs map[string]any) (kbID
 	kbID = globals.GlobalOrInput(ctx, inputs, "kb_id", "")
 	docID = globals.GlobalOrInput(ctx, inputs, "doc_id", "")
 	return kbID, docID
+}
+
+func dropSensitiveMedia(chunk map[string]any) {
+	if chunk == nil {
+		return
+	}
+	delete(chunk, "image")
+	delete(chunk, "media_ref")
+	chunk["img_id"] = ""
 }

@@ -79,6 +79,12 @@ CONF_DIR="/ragflow/conf"
 TEMPLATE_FILE="${CONF_DIR}/service_conf.yaml.template"
 CONF_FILE="${CONF_DIR}/service_conf.yaml"
 
+# The bundled deployment explicitly uses MinIO credentials for a separate
+# private originals bucket. External stores supply their own credentials.
+export SENSITIVE_ORIGINAL_ACCESS_KEY="${SENSITIVE_ORIGINAL_ACCESS_KEY:-${MINIO_USER:-rag_flow}}"
+export SENSITIVE_ORIGINAL_SECRET_KEY="${SENSITIVE_ORIGINAL_SECRET_KEY:-${MINIO_PASSWORD:-infini_rag_flow}}"
+export SENSITIVE_ORIGINAL_ENDPOINT="${SENSITIVE_ORIGINAL_ENDPOINT:-http://${MINIO_HOST:-minio}:9000}"
+
 rm -f "${CONF_FILE}"
 DEF_ENV_VALUE_PATTERN="\$\{([^:]+):-([^}]+)\}"
 while IFS= read -r line || [[ -n "$line" ]]; do

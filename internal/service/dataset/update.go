@@ -16,6 +16,7 @@ import (
 	pipelinepkg "ragflow/internal/ingestion/pipeline"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
+	"ragflow/internal/sensitive"
 	"ragflow/internal/service"
 
 	"go.uber.org/zap"
@@ -172,7 +173,7 @@ func (d *DatasetService) UpdateDataset(ctx context.Context, datasetID string, re
 		}
 	}
 
-	requestedAnyUpdate := len(simpleUpdates) > 0 || connectorsProvided || parserIDProvided ||
+	requestedAnyUpdate := len(req.SecurityConfig) > 0 || len(simpleUpdates) > 0 || connectorsProvided || parserIDProvided ||
 		pipelineID != nil || embdIDProvided || pagerankRequested || req.ParserConfig != nil || req.ParserConfigProvided || req.PipelineVersionID != nil
 	if !requestedAnyUpdate {
 		return nil, common.CodeDataError, errors.New("no properties were modified")
@@ -213,6 +214,15 @@ func (d *DatasetService) UpdateDataset(ctx context.Context, datasetID string, re
 		}
 
 		updates := make(map[string]interface{}, len(simpleUpdates)+6)
+		if len(req.SecurityConfig) > 0 {
+			cfg, err := sensitive.DecodeDatasetConfig(req.SecurityConfig, sensitive.DatasetConfig{DefaultEnabled: lockedKB.SecurityProcessingDefault, Enforced: lockedKB.SecurityProcessingEnforced})
+			if err != nil {
+				txCode = common.CodeArgumentError
+				return err
+			}
+			updates["security_processing_default"] = cfg.DefaultEnabled
+			updates["security_processing_enforced"] = cfg.Enforced
+		}
 		for key, value := range simpleUpdates {
 			updates[key] = value
 		}

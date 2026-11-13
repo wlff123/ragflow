@@ -496,7 +496,7 @@ func TestUploadLocalDocuments_RoutesFileTypesToDedicatedParsers(t *testing.T) {
 		makeTestFileHeader(t, "file", "talk.mp3", []byte("mp3-bytes")),
 		makeTestFileHeader(t, "file", "notes.txt", []byte("plain text")),
 	}
-	got, errs := svc.UploadLocalDocuments(ctx, kb, files, "", nil)
+	got, errs := svc.UploadLocalDocuments(ctx, kb, files, "", nil, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -587,7 +587,7 @@ func TestUploadLocalDocuments_FallsBackWhenSelectionLacksFamily(t *testing.T) {
 	got, errs := svc.UploadLocalDocuments(ctx, presentationKB, []*multipart.FileHeader{
 		makeTestFileHeader(t, "file", "laws.txt", []byte("plain text")),
 		makeTestFileHeader(t, "file", "deck.pptx", []byte("pptx-bytes")),
-	}, "", nil)
+	}, "", nil, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -616,7 +616,7 @@ func TestUploadLocalDocuments_FallsBackWhenSelectionLacksFamily(t *testing.T) {
 	got, errs = svc.UploadLocalDocuments(ctx, canvasKB, []*multipart.FileHeader{
 		makeTestFileHeader(t, "file", "report.pdf", []byte("%PDF-1.4")),
 		makeTestFileHeader(t, "file", "laws.txt", []byte("plain text")),
-	}, "", nil)
+	}, "", nil, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -675,7 +675,7 @@ func TestUploadLocalDocuments_SwitchesVideoToPicture(t *testing.T) {
 		makeTestFileHeader(t, "file", "movie.mp4", []byte("mp4-bytes")),
 		makeTestFileHeader(t, "file", "legacy.rmvb", []byte("rmvb-bytes")),
 		makeTestFileHeader(t, "file", "notes.txt", []byte("plain text")),
-	}, "", nil)
+	}, "", nil, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}

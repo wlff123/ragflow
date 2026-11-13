@@ -56,7 +56,14 @@ func (s *DocumentService) Upsert(ctx context.Context, input service.DocumentUpse
 	}
 
 	// get base info
-	kb := &input.TaskContext.Knowledgebase
+	kb, err := s.kbDAO.GetByID(ctx, dao.DB, input.TaskContext.Knowledgebase.ID)
+	if err != nil {
+		return service.DocumentUpsertResult{}, err
+	}
+	if err := service.ValidateOrdinaryImport(kb, nil); err != nil {
+		return service.DocumentUpsertResult{}, err
+	}
+	input.TaskContext.Knowledgebase = *kb
 	tenantID := input.TaskContext.Connector.TenantID
 	// return normalized filename
 	filename := syncDocumentFilename(input.SourceDocument.SemanticIdentifier, input.SourceDocument.Extension, input.SourceDocument.SourceID)
@@ -88,6 +95,9 @@ func (s *DocumentService) Upsert(ctx context.Context, input service.DocumentUpse
 	// if the 'file' is existing
 	existing, err := s.documentDAO.GetByID(ctx, dao.DB, input.DocumentID)
 	if err != nil && !errorsIsRecordNotFound(err) {
+		return service.DocumentUpsertResult{}, err
+	}
+	if err := service.ValidateOrdinaryImport(kb, existing); err != nil {
 		return service.DocumentUpsertResult{}, err
 	}
 	if existing != nil && existing.ContentHash != nil && *existing.ContentHash == contentHash {

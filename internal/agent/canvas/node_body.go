@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"ragflow/internal/common"
 	"ragflow/internal/dao"
+	"ragflow/internal/sensitive"
 	"strings"
 
 	"ragflow/internal/agent/runtime"
@@ -192,7 +193,7 @@ func withExceptionHandler(cpnID string, params map[string]any, body nodeBodyFn) 
 				err = errors.New(message)
 			}
 		}
-		if err == nil || IsInterruptError(err) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		if err == nil || sensitive.Reason(err) != "" || IsInterruptError(err) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return out, err
 		}
 		switch params["exception_method"] {
