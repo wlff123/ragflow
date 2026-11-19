@@ -26,6 +26,7 @@ const (
 	ComponentNameExtractor = common.ComponentNameExtractor
 	ComponentNameCompiler  = common.ComponentNameCompiler
 	ComponentNameTokenizer = common.ComponentNameTokenizer
+	ComponentNameSanitizer = common.ComponentNameSanitizer
 
 	ComponentNameGeneralChunker = common.ComponentNameGeneralChunker
 	ComponentNameTokenChunker   = common.ComponentNameTokenChunker

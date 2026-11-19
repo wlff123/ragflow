@@ -23,6 +23,7 @@ const (
 	ComponentNameExtractor = "Extractor"
 	ComponentNameCompiler  = "Compiler"
 	ComponentNameTokenizer = "Tokenizer"
+	ComponentNameSanitizer = "Sanitizer"
 
 	ComponentNameGeneralChunker        = "GeneralChunker"
 	ComponentNameTokenChunker          = "TokenChunker"
@@ -44,6 +45,7 @@ func IsComponentName(name string) bool {
 		ComponentNameExtractor,
 		ComponentNameCompiler,
 		ComponentNameTokenizer,
+		ComponentNameSanitizer,
 		ComponentNameGeneralChunker,
 		ComponentNameTokenChunker,
 		ComponentNameTitleChunker,

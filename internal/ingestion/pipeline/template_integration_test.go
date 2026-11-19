@@ -752,10 +752,17 @@ func TestPipelineRun_AllIngestionTemplates_RealComponentsSmoke(t *testing.T) {
 
 func attachFixedEmbedderFactory(t *testing.T, pipe *Pipeline) {
 	t.Helper()
+	attachEmbedderFactory(t, pipe, fixedEmbedder{})
+}
+
+// attachEmbedderFactory makes the pipeline's Tokenizer embed with emb; every
+// other component comes from the default registry.
+func attachEmbedderFactory(t *testing.T, pipe *Pipeline, emb componentpkg.Embedder) {
+	t.Helper()
 	pipe.WithComponentFactory(func(name string, params map[string]any) (runtime.Component, error) {
 		if name == componentpkg.ComponentNameTokenizer {
 			return componentpkg.NewTokenizerComponentWithResolver(params, func(ctx context.Context, _, _ string) (componentpkg.Embedder, string, error) {
-				return fixedEmbedder{}, "", nil
+				return emb, "", nil
 			})
 		}
 		factory, _, _, ok := runtime.DefaultRegistry.Lookup(name)
