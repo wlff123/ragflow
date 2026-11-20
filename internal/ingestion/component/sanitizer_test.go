@@ -198,6 +198,17 @@ func TestSanitizer_MapItemsAndNoHits(t *testing.T) {
 	}
 }
 
+func TestSanitizer_NonPDFOutline(t *testing.T) {
+	for _, outline := range []any{"ordinary metadata", []any{map[string]any{"title": testPhone}}} {
+		file := map[string]any{"name": "older.pdf", "outline": outline}
+		out := invokeSanitizer(t, map[string]any{"name": "notes.txt", "file": file, "output_format": "text", "text": "body"})
+		report := out[schema.KeySanitizeReport].(schema.SanitizeReport)
+		if report.ReplacementCount != 0 || !reflect.DeepEqual(out["file"].(map[string]any)["outline"], outline) {
+			t.Fatalf("file=%v report=%+v", out["file"], report)
+		}
+	}
+}
+
 func TestSanitizer_StringFormats(t *testing.T) {
 	md := "# 联系方式\n\n| 姓名 | 电话 |\n|---|---|\n| 张三 | " + testPhone + " |\n"
 	for _, format := range []string{"markdown", "text", "html"} {
@@ -206,6 +217,13 @@ func TestSanitizer_StringFormats(t *testing.T) {
 		got, _ := out[format].(string)
 		if strings.Contains(got, testPhone) || !strings.Contains(got, "| 张三 | "+phoneMark+" |") {
 			t.Fatalf("%s = %q", format, got)
+		}
+	}
+	const encoded = "<p>电话 &#49;3800138000</p>"
+	for format, want := range map[string]string{"html": "<p>电话 " + phoneMark + "</p>", "text": encoded} {
+		out := invokeSanitizer(t, map[string]any{"output_format": format, format: encoded})
+		if out[format] != want {
+			t.Fatalf("%s: got %v, want %s", format, out[format], want)
 		}
 	}
 	// *string payloads are accepted too.

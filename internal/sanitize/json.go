@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -39,7 +40,60 @@ type jsonFrame struct {
 	expectKey bool
 	// key is the last key read in an object, or for an array the key its
 	// elements belong to ("" for a top-level array).
-	key string
+	key  string
+	keys []int // key token indices in edits
+}
+
+type jsonEdit struct {
+	start, end            int
+	original, replacement string
+	numberAt              int
+}
+
+// Reserve unchanged names before assigning names to rewritten keys.
+func (s *Sanitizer) finishKeys(ctx context.Context, edits []jsonEdit, keys []int, out *Result) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	used := make(map[string]bool, len(keys))
+	for _, i := range keys {
+		e := &edits[i]
+		runes := []rune(e.original)
+		plan, err := s.plan(ctx, e.original, runes, len(keys))
+		if err != nil {
+			return err
+		}
+		if len(plan) == 0 {
+			used[e.original] = true
+			continue
+		}
+		var hits map[string]int
+		e.replacement, hits = render(runes, plan)
+		first := plan[0]
+		e.numberAt = len(string(runes[:first.start])) + len(placeholder(first.rule.Name)) - 1
+		out.Add(Result{Count: len(plan), RuleHits: hits})
+	}
+	assigned := map[string]string{}
+	next := map[string]int{}
+	for _, i := range keys {
+		e := &edits[i]
+		if e.replacement == "" {
+			continue
+		}
+		if name, ok := assigned[e.original]; ok {
+			e.replacement = name
+			continue
+		}
+		base := e.replacement
+		for used[e.replacement] {
+			n := max(2, next[base])
+			next[base] = n + 1
+			e.replacement = base[:e.numberAt] + "_" + strconv.Itoa(n) + base[e.numberAt:]
+		}
+		used[e.replacement] = true
+		assigned[e.original] = e.replacement
+	}
+	return nil
 }
 
 // enclosingKey returns the key a value belongs to: array elements keep the
@@ -52,47 +106,25 @@ func (f *jsonFrame) enclosingKey() string {
 	return f.key
 }
 
-// sanitizeJSON replaces sensitive values inside a JSON document while keeping
-// it valid JSON: only string and number tokens are rewritten, every other byte
-// (keys order, whitespace, punctuation) is kept as is.
-//
-// A value is matched together with its key ("key: value"), so the key/value
-// rule sees `"password": "..."` the same way it does in plain text. A
-// replaced number becomes a JSON string holding the placeholder, so
-// `"phone": 13800138000` turns into `"phone": "[敏感信息已移除：手机号]"`.
-// text must satisfy isJSONDocument.
+// sanitizeJSON matches decoded keys and values in a valid JSON document.
+// It rewrites only matching tokens, preserving every other byte.
 func (s *Sanitizer) sanitizeJSON(ctx context.Context, text string) (Result, error) {
-	var (
-		stack []jsonFrame
-		out   Result
-		b     strings.Builder
-		pos   int // text[:pos] is already written to b
-	)
-	b.Grow(len(text))
-	// write sanitizes one scalar token text[start:end] holding value. key is
-	// the enclosing object key, or "" for keys themselves and array elements.
+	var stack []jsonFrame
+	var edits []jsonEdit
+	var out Result
 	write := func(start, end int, key, value string) error {
-		var (
-			r   Result
-			err error
-		)
+		var r Result
+		var err error
 		if key == "" {
 			r, err = s.sanitizeText(ctx, value)
 		} else {
 			r, err = s.sanitizeKeyed(ctx, key, value)
 		}
-		if err != nil || r.Count == 0 {
-			return err
+		if err == nil && r.Count > 0 {
+			edits = append(edits, jsonEdit{start: start, end: end, replacement: r.Text})
+			out.Add(r)
 		}
-		raw, err := encodeJSONString(r.Text)
-		if err != nil {
-			return err
-		}
-		b.WriteString(text[pos:start])
-		b.WriteString(raw)
-		pos = end
-		out.Add(r)
-		return nil
+		return err
 	}
 
 	for i := 0; i < len(text); {
@@ -108,6 +140,9 @@ func (s *Sanitizer) sanitizeJSON(ctx context.Context, text string) (Result, erro
 			stack = append(stack, jsonFrame{key: f.enclosingKey()})
 			i++
 		case c == '}' || c == ']':
+			if err := s.finishKeys(ctx, edits, f.keys, &out); err != nil {
+				return Result{}, err
+			}
 			stack = stack[:len(stack)-1]
 			i++
 		case c == ',':
@@ -121,13 +156,12 @@ func (s *Sanitizer) sanitizeJSON(ctx context.Context, text string) (Result, erro
 			if err != nil {
 				return Result{}, err
 			}
-			key := f.enclosingKey()
 			if f != nil && f.object && f.expectKey {
 				f.expectKey = false
 				f.key = decoded
-				key = ""
-			}
-			if err := write(i, end, key, decoded); err != nil {
+				f.keys = append(f.keys, len(edits))
+				edits = append(edits, jsonEdit{start: i, end: end, original: decoded})
+			} else if err := write(i, end, f.enclosingKey(), decoded); err != nil {
 				return Result{}, err
 			}
 			i = end
@@ -144,6 +178,24 @@ func (s *Sanitizer) sanitizeJSON(ctx context.Context, text string) (Result, erro
 			// ':', whitespace and the literals true/false/null
 			i++
 		}
+	}
+	if out.Count == 0 {
+		return Result{Text: text}, nil
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	pos := 0
+	for _, e := range edits {
+		if e.replacement == "" {
+			continue
+		}
+		raw, err := encodeJSONString(e.replacement)
+		if err != nil {
+			return Result{}, err
+		}
+		b.WriteString(text[pos:e.start])
+		b.WriteString(raw)
+		pos = e.end
 	}
 	b.WriteString(text[pos:])
 	out.Text = b.String()

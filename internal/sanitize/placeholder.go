@@ -16,6 +16,11 @@
 
 package sanitize
 
+import (
+	"strconv"
+	"strings"
+)
+
 const (
 	placeholderPrefix = "[敏感信息已移除："
 	placeholderSuffix = "]"
@@ -38,11 +43,8 @@ func placeholder(ruleName string) string {
 	return placeholderPrefix + ruleName + placeholderSuffix
 }
 
-// maskPlaceholders masks, in place, every standard placeholder of a known rule
-// in runes and returns runes. Only placeholders whose name belongs to the catalog are
-// masked: a bracket that merely looks similar is still scanned. This makes
-// sanitization idempotent: re-running it on its own output finds nothing.
-func maskPlaceholders(runes []rune, known map[string]bool) []rune {
+// maskPlaceholders masks known placeholders in place before matching.
+func maskPlaceholders(runes []rune, known map[string]bool, objectSize int) []rune {
 	for i := 0; i < len(runes); i++ {
 		if !hasRunePrefix(runes[i:], placeholderPrefixRunes) {
 			continue
@@ -51,7 +53,7 @@ func maskPlaceholders(runes []rune, known map[string]bool) []rune {
 			if runes[j] != ']' {
 				continue
 			}
-			if known[string(runes[i:j+1])] {
+			if isPlaceholder(string(runes[i:j+1]), known, objectSize) {
 				for k := i; k <= j; k++ {
 					runes[k] = maskRune
 				}
@@ -61,6 +63,21 @@ func maskPlaceholders(runes []rune, known map[string]bool) []rune {
 		}
 	}
 	return runes
+}
+
+// Numbered placeholders are local to JSON keys; an assigned ordinal cannot
+// exceed the number of members in that object.
+func isPlaceholder(token string, known map[string]bool, objectSize int) bool {
+	if known[token] {
+		return true
+	}
+	i := strings.LastIndexByte(token, '_')
+	if objectSize < 2 || i < 0 || !known[token[:i]+placeholderSuffix] {
+		return false
+	}
+	digits := token[i+1 : len(token)-1]
+	n, err := strconv.Atoi(digits)
+	return err == nil && n >= 2 && n <= objectSize && digits == strconv.Itoa(n)
 }
 
 func hasRunePrefix(runes, prefix []rune) bool {

@@ -105,31 +105,35 @@ func findSpans(ctx context.Context, rules []*compiledRule, runes []rune) ([]span
 	return found, nil
 }
 
-// valueSpan narrows a key/value match to its value: it skips the key up to the
-// first ':' or '=' (also "=:" and "=>"), then spaces and quotes, and covers the
-// value characters that follow. The key, separator and quotes are kept, so
-// "password: abc" keeps "password: " and JSON/YAML syntax stays intact. An
-// empty result (no value) yields start == end and is dropped by the caller.
+// Keep the complete matched value, including characters allowed by external rules.
 func valueSpan(runes []rune, s span) span {
+	if s.start == s.end {
+		return s
+	}
 	i := s.start
 	for i < s.end && runes[i] != ':' && runes[i] != '=' {
 		i++
 	}
-	if i >= s.end {
-		return span{start: s.start, end: s.start, rule: s.rule}
-	}
-	if runes[i] == '=' && i+1 < s.end && (runes[i+1] == ':' || runes[i+1] == '>') {
+	if i < s.end {
+		if runes[i] == '=' && i+1 < s.end && (runes[i+1] == ':' || runes[i+1] == '>') {
+			i++
+		}
 		i++
+		for i < s.end && (unicode.IsSpace(runes[i]) || runes[i] == '\'' || runes[i] == '"') {
+			i++
+		}
+		end := s.end
+		for end > i && (unicode.IsSpace(runes[end-1]) || runes[end-1] == '\'' || runes[end-1] == '"') {
+			end--
+		}
+		if end > i {
+			s.start, s.end = i, end
+		}
 	}
-	i++
-	for i < s.end && (unicode.IsSpace(runes[i]) || runes[i] == '\'' || runes[i] == '"') {
-		i++
+	for s.end < len(runes) && isValueRune(runes[s.end]) {
+		s.end++
 	}
-	end := i
-	for end < len(runes) && isValueRune(runes[end]) {
-		end++
-	}
-	return span{start: i, end: end, rule: s.rule}
+	return s
 }
 
 // isValueRune is the value character class of the key/value rule:

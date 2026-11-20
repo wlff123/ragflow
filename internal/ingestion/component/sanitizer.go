@@ -27,8 +27,7 @@
 // business rules (rule set, placeholder, merging, re-check, counting) live in
 // internal/sanitize. The node has no parameters, reads no database and
 // touches no storage. Fields of the envelope other than the body payload
-// (name, file_type, file, doc_id, bucket, path, lang, ...) pass through
-// unchanged.
+// pass through, except PDF outline titles copied into the first chunk.
 
 package component
 
@@ -135,15 +134,25 @@ func (c *SanitizerComponent) Invoke(ctx context.Context, _ *gorm.DB, inputs map[
 		if text == nil {
 			break // absent payload: nothing to sanitize, nothing to add
 		}
-		clean, changed, err := w.field("", *text)
+		var r sanitize.Result
+		if format == "html" {
+			r, err = s.SanitizeHTML(ctx, *text)
+		} else {
+			r, err = s.Sanitize(ctx, *text)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("sanitizer: %w", err)
 		}
-		if changed {
-			out[format] = clean
+		w.total.Add(r)
+		if r.Count > 0 {
+			out[format] = r.Text
 		}
 	default:
 		return nil, fmt.Errorf("sanitizer: %w", errUnsupportedPayload)
+	}
+
+	if err := w.outline(out); err != nil {
+		return nil, fmt.Errorf("sanitizer: %w", err)
 	}
 
 	info := s.Rules()

@@ -35,6 +35,7 @@ import (
 	"ragflow/internal/agent/runtime"
 	"ragflow/internal/common"
 	"ragflow/internal/entity"
+	"ragflow/internal/ingestion/component"
 	"ragflow/internal/ingestion/component/schema"
 	"ragflow/internal/ingestion/task/indexdoc"
 	parserlib "ragflow/internal/parser/parser"
@@ -1478,6 +1479,48 @@ func TestGeneralChunkerPDFAttachesOutlineOnce(t *testing.T) {
 	entry, _ := outline[0].(map[string]any)
 	if entry["title"] != "Chapter 1" || entry["depth"] != float64(0) {
 		t.Errorf("outline entry = %#v", entry)
+	}
+}
+
+func TestSanitizerPDFOutlineReachesChunk(t *testing.T) {
+	node, err := component.NewSanitizerComponent(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunker, err := NewGeneralChunker(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const phone = "13800138000"
+	const mark = "[敏感信息已移除：手机号]"
+	row := map[string]any{"title": phone, "level": 2, "page_number": 3}
+	for _, tc := range []struct {
+		name, fileType string
+		outline        any
+	}{
+		{"a.txt", "pdf", []map[string]any{row}},
+		{"a.pdf", " PDF ", []any{row}},
+		{"a.PDF ", " ", []any{row}},
+		{" ", "", []any{row}},
+	} {
+		file := map[string]any{"name": "source.pdf", "outline": tc.outline}
+		out, err := node.Invoke(t.Context(), nil, map[string]any{"name": tc.name, "file_type": tc.fileType, "output_format": "json", "file": file, "json": []map[string]any{{"text": "body", "doc_type_kwd": "text"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report := out[schema.KeySanitizeReport].(schema.SanitizeReport)
+		if row["title"] != phone || report.ReplacementCount != 1 {
+			t.Fatalf("row=%v report=%+v", row, report)
+		}
+		result, err := chunker.Invoke(t.Context(), nil, out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := outputChunks(t, result)[0]["__outline__"]
+		want := []any{map[string]any{"title": mark, "depth": float64(2)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("outline=%#v", got)
+		}
 	}
 }
 

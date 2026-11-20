@@ -254,6 +254,16 @@ func TestSanitize_JSONDecodedView(t *testing.T) {
 	}
 }
 
+func TestSanitize_JSONWithOuterWhitespace(t *testing.T) {
+	const left, right = "\u00a0 ", "\n\u3000"
+	input := left + `{"note":"\u0031\u0033800138000"}` + right
+	want := left + `{"note":"[敏感信息已移除：手机号]"}` + right
+	r, err := mustDefault(t).SanitizeField(t.Context(), "body", input)
+	if err != nil || r.Text != want || r.Count != 1 {
+		t.Fatalf("text=%q count=%d err=%v", r.Text, r.Count, err)
+	}
+}
+
 func TestSanitize_Idempotent(t *testing.T) {
 	s := mustDefault(t)
 	for _, in := range []string{
@@ -516,5 +526,92 @@ func TestDefault_CachedInstance(t *testing.T) {
 	b, errB := Default()
 	if errA != nil || errB != nil || a == nil || a != b {
 		t.Fatalf("Default not cached: %v %v", errA, errB)
+	}
+}
+
+func TestJSONCollisionPreservesMembers(t *testing.T) {
+	s := mustDefault(t)
+	const mark = "[敏感信息已移除：手机号]"
+	const numbered = "[敏感信息已移除：手机号_2]"
+	// The unchanged key occurs last; the existing placeholder in the prefix stays put.
+	input := `{"before":0,"@-13800138000":"A","@-13900139000":"B","@-#":"keep","child":{"13800138000":1,"13900139000":2}}`
+	want := `{"before":0,"@-@":"A","@-[敏感信息已移除：手机号_3]":"B","@-#":"keep","child":{"@":1,"#":2}}`
+	expand := strings.NewReplacer("@", mark, "#", numbered)
+	r := sanitize(t, s, expand.Replace(input))
+	if r.Text != expand.Replace(want) || r.Count != 4 || r.RuleHits["CN_MOBILE"] != 4 {
+		t.Fatalf("%+v", r)
+	}
+	if again := sanitize(t, s, r.Text); again.Count != 0 || again.Text != r.Text {
+		t.Fatalf("second pass: %+v", again)
+	}
+}
+
+func TestHTMLBody(t *testing.T) {
+	s := mustDefault(t)
+	const phone = "[敏感信息已移除：手机号]"
+	for _, tc := range []struct {
+		in, want string
+		count    int
+	}{
+		{"<p>mysql://root:pw@db.local/app</p><p>正文</p>", "<p>[敏感信息已移除：数据库密码]</p><p>正文</p>", 1},
+		{`<div title="&#49;3800138000">电话 &#49;3800138000</div>`, `<div title="` + phone + `">电话 ` + phone + `</div>`, 2},
+		{`<INPUT disabled ConsumerKey = 'abcd1234efgh' title="untouched &amp; OK"/>`, `<INPUT disabled ConsumerKey = '[敏感信息已移除：密钥类]' title="untouched &amp; OK"/>`, 1},
+		{`<iframe srcdoc="&lt;p&gt;&#49;3800138000&lt;/p&gt;"></iframe>`, `<iframe srcdoc="&lt;p&gt;` + phone + `&lt;/p&gt;"></iframe>`, 1},
+		{`<p>13800</p><p>138000</p>`, `<p>13800</p><p>138000</p>`, 0},
+		{`<P data-x='a &amp; b'>普通</P>`, `<P data-x='a &amp; b'>普通</P>`, 0},
+	} {
+		r, err := s.SanitizeHTML(t.Context(), tc.in)
+		if err != nil || r.Text != tc.want || r.Count != tc.count {
+			t.Errorf("%s: %+v %v", tc.in, r, err)
+		}
+		if again, err := s.SanitizeHTML(t.Context(), r.Text); err != nil || again.Count != 0 || again.Text != r.Text {
+			t.Errorf("second pass: %+v %v", again, err)
+		}
+	}
+	if _, err := s.SanitizeHTML(t.Context(), "<p>13800<b>138000</b></p>"); !errors.Is(err, ErrResidual) {
+		t.Errorf("split number: %v", err)
+	}
+}
+
+func TestExternalValueSpan(t *testing.T) {
+	c := builtinCatalogForTest(t)
+	for i := range c.Rules {
+		if c.Rules[i].ID == "SECRET_KV" {
+			c.Rules[i].Pattern = `password:\s*["']?[A-Za-z.]+["']?`
+		}
+	}
+	s, err := newFromReader(bytes.NewReader(encodeCatalog(t, c)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := sanitize(t, s, `password: "example.suffix"`)
+	if r.Text != `password: "[敏感信息已移除：密钥类]"` || r.Count != 1 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestNumberedPlaceholderLocalToJSONKeys(t *testing.T) {
+	c := builtinCatalogForTest(t)
+	for i := range c.Rules {
+		if c.Rules[i].ID == "BANK_CARD" {
+			c.Rules[i].Pattern = "手机号_2"
+		}
+	}
+	s, err := newFromReader(bytes.NewReader(encodeCatalog(t, c)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := `{"13800138000":"A","13900139000":"B"}`
+	want := `{"[敏感信息已移除：手机号]":"A","[敏感信息已移除：手机号_2]":"B"}`
+	if r := sanitize(t, s, input); r.Text != want || r.Count != 2 {
+		t.Fatal(r)
+	}
+	if r := sanitize(t, s, want); r.Text != want || r.Count != 0 {
+		t.Fatal(r)
+	}
+	for _, padding := range []string{"", strings.Repeat(" ", 50)} {
+		if r := sanitize(t, s, "[敏感信息已移除：手机号_2]"+padding); r.Count != 1 {
+			t.Fatal(r)
+		}
 	}
 }

@@ -21,10 +21,12 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"strings"
 
 	"ragflow/internal/entity"
 	"ragflow/internal/parser/parser"
 	"ragflow/internal/sanitize"
+	"ragflow/internal/utility"
 )
 
 // maxSanitizeDepth bounds recursion into nested item maps.
@@ -74,6 +76,60 @@ func (w *itemWalker) field(key, s string) (string, bool, error) {
 	}
 	w.total.Add(r)
 	return r.Text, r.Count > 0, nil
+}
+
+// GeneralChunker copies file.outline titles into the first PDF chunk.
+func (w *itemWalker) outline(out map[string]any) error {
+	file, _ := out["file"].(map[string]any)
+	typ, _ := out["file_type"].(string)
+	if typ = strings.TrimSpace(typ); typ == "" {
+		name, _ := out["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			name, _ = file["name"].(string)
+		}
+		typ = utility.GetFileExtension(strings.TrimSpace(name))
+	}
+	if !strings.EqualFold(typ, "pdf") {
+		return nil
+	}
+	var clean any
+	var changed bool
+	var err error
+	switch rows := file["outline"].(type) {
+	case nil:
+		return nil
+	case []map[string]any:
+		clean, changed, err = cloneOnChange(rows, w.outlineTitle)
+	case []any:
+		clean, changed, err = cloneOnChange(rows, func(row any) (any, bool, error) {
+			m, ok := row.(map[string]any)
+			if !ok {
+				return nil, false, errUnsupportedPayload
+			}
+			return w.outlineTitle(m)
+		})
+	default:
+		return errUnsupportedPayload
+	}
+	if err == nil && changed {
+		file = maps.Clone(file)
+		file["outline"] = clean
+		out["file"] = file
+	}
+	return err
+}
+
+func (w *itemWalker) outlineTitle(row map[string]any) (map[string]any, bool, error) {
+	title, ok := row["title"].(string)
+	if !ok {
+		return row, false, nil
+	}
+	clean, changed, err := w.field("", title)
+	if changed {
+		row = maps.Clone(row)
+		row["title"] = clean
+	}
+	return row, changed, err
 }
 
 func (w *itemWalker) items(items []parser.DocItem) ([]parser.DocItem, error) {

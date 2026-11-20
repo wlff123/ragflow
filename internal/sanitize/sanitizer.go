@@ -208,7 +208,7 @@ func (s *Sanitizer) SanitizeField(ctx context.Context, key, value string) (Resul
 // sanitizeText is the plain-text pass: match, resolve, render.
 func (s *Sanitizer) sanitizeText(ctx context.Context, text string) (Result, error) {
 	runes := []rune(text)
-	plan, err := s.plan(ctx, text, runes)
+	plan, err := s.plan(ctx, text, runes, 0)
 	if err != nil {
 		return Result{}, err
 	}
@@ -239,7 +239,7 @@ func (s *Sanitizer) keyedPlan(ctx context.Context, key, value string) ([]span, [
 	prefix := key + ": "
 	full := prefix + value
 	runes := []rune(full)
-	plan, err := s.plan(ctx, full, runes)
+	plan, err := s.plan(ctx, full, runes, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -260,7 +260,7 @@ func (s *Sanitizer) keyedPlan(ctx context.Context, key, value string) ([]span, [
 func (s *Sanitizer) checkResidual(ctx context.Context, text string) error {
 	runes := []rune(text)
 	if strings.Contains(text, placeholderPrefix) {
-		maskPlaceholders(runes, s.placeholders)
+		maskPlaceholders(runes, s.placeholders, 0)
 	}
 	found, err := findSpans(ctx, s.rules, runes)
 	if err != nil {
@@ -274,20 +274,14 @@ func (s *Sanitizer) checkResidual(ctx context.Context, text string) error {
 
 // plan returns the replacement plan for runes (the runes of text). Matching
 // runs with existing placeholders masked; the returned spans index runes.
-func (s *Sanitizer) plan(ctx context.Context, text string, runes []rune) ([]span, error) {
-	masked := s.masked(text, runes)
+func (s *Sanitizer) plan(ctx context.Context, text string, runes []rune, objectSize int) ([]span, error) {
+	masked := runes
+	if strings.Contains(text, placeholderPrefix) {
+		masked = maskPlaceholders(append([]rune(nil), runes...), s.placeholders, objectSize)
+	}
 	found, err := findSpans(ctx, s.rules, masked)
 	if err != nil {
 		return nil, err
 	}
 	return resolveSpans(found, masked), nil
-}
-
-// masked returns runes with existing placeholders masked. Only text that
-// contains the placeholder prefix is copied; other text is matched as is.
-func (s *Sanitizer) masked(text string, runes []rune) []rune {
-	if !strings.Contains(text, placeholderPrefix) {
-		return runes
-	}
-	return maskPlaceholders(append([]rune(nil), runes...), s.placeholders)
 }
